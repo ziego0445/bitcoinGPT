@@ -1,7 +1,5 @@
 'use client'
 
-import { MoonIcon } from "@heroicons/react/24/solid"
-
 export default function Header() {
   return (
     <header className="bg-gray-800 border-b border-gray-700">

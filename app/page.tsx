@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import BitcoinChart from "./components/BitcoinChart"
 import TradingSignals from "./components/TradingSignals"
 import CommunityFeed from "./components/CommunityFeed"

@@ -11,6 +11,15 @@ interface KlineData {
   low: number
 }
 
+interface BinanceKlineResponse {
+  0: number;    // Open time
+  1: string;    // Open
+  2: string;    // High
+  3: string;    // Low
+  4: string;    // Close
+  // ... 나머지 필드는 현재 사용하지 않으므로 생략
+}
+
 export default function TradingSignals() {
   const [signal, setSignal] = useState<{
     type: 'BUY' | 'SELL' | 'NEUTRAL'
@@ -31,9 +40,9 @@ export default function TradingSignals() {
       const response = await fetch(
         'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=2'
       )
-      const data = await response.json()
+      const data = await response.json() as BinanceKlineResponse[]
       
-      const candles: KlineData[] = data.map((item: any) => ({
+      const candles: KlineData[] = data.map((item: BinanceKlineResponse) => ({
         timestamp: item[0],
         open: parseFloat(item[1]),
         high: parseFloat(item[2]),

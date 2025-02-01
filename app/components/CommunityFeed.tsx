@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { db } from '../firebase'
-import { collection, addDoc, query, orderBy, onSnapshot, Timestamp } from 'firebase/firestore'
+import { collection, addDoc, query, orderBy, onSnapshot, Timestamp, limit } from 'firebase/firestore'
 
 interface Post {
   id: string
@@ -17,8 +17,12 @@ export default function CommunityFeed() {
   const [author, setAuthor] = useState('')
 
   useEffect(() => {
-    // Firestore에서 실시간으로 포스트 가져오기
-    const q = query(collection(db, 'posts'), orderBy('timestamp', 'desc'))
+    // Firestore에서 최근 10개의 포스트만 가져오기
+    const q = query(
+      collection(db, 'posts'), 
+      orderBy('timestamp', 'desc'),
+      limit(10)
+    )
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const newPosts = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -48,11 +52,11 @@ export default function CommunityFeed() {
   }
 
   return (
-    <div className="bg-gray-800 p-4 rounded-lg">
+    <div className="bg-gray-800 p-4 rounded-lg h-full flex flex-col">
       <h2 className="text-xl font-bold text-white mb-4">커뮤니티 피드</h2>
       
       {/* 포스트 작성 폼 */}
-      <form onSubmit={handleSubmit} className="mb-6">
+      <form onSubmit={handleSubmit} className="mb-4">
         <div className="mb-4">
           <input
             type="text"
@@ -79,19 +83,21 @@ export default function CommunityFeed() {
         </button>
       </form>
 
-      {/* 포스트 목록 */}
-      <div className="space-y-4">
-        {posts.map((post) => (
-          <div key={post.id} className="bg-gray-700 p-4 rounded-lg">
-            <div className="flex justify-between items-start mb-2">
-              <span className="font-bold text-white">{post.author}</span>
-              <span className="text-sm text-gray-400">
-                {post.timestamp.toDate().toLocaleString()}
-              </span>
+      {/* 포스트 목록 - 스크롤 가능한 컨테이너 */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="space-y-4">
+          {posts.map((post) => (
+            <div key={post.id} className="bg-gray-700 p-4 rounded-lg">
+              <div className="flex justify-between items-start mb-2">
+                <span className="font-bold text-white">{post.author}</span>
+                <span className="text-sm text-gray-400">
+                  {post.timestamp.toDate().toLocaleString()}
+                </span>
+              </div>
+              <p className="text-gray-200 whitespace-pre-wrap">{post.content}</p>
             </div>
-            <p className="text-gray-200 whitespace-pre-wrap">{post.content}</p>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   )
