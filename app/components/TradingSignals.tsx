@@ -33,10 +33,11 @@ interface BinanceKlineData {
   5: string;    // volume
 }
 
-const openai = new OpenAI({
-  apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
+// OpenAI 클라이언트 초기화를 조건부로 수정
+const openai = typeof window !== 'undefined' ? new OpenAI({
+  apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY || '',
   dangerouslyAllowBrowser: true
-})
+}) : null
 
 export default function TradingSignals() {
   const [signal, setSignal] = useState<SignalData | null>(null)
@@ -64,6 +65,10 @@ export default function TradingSignals() {
 
   const getAIAnalysis = async (chartData: KlineData[]) => {
     try {
+      if (!openai) {
+        return "OpenAI 클라이언트 초기화에 실패했습니다."
+      }
+
       // 차트 캡쳐
       const chartImage = await captureChart()
       if (!chartImage) {
