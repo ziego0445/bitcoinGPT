@@ -40,6 +40,20 @@ const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h"]
 const CANDLE_LIMIT = 120
 const MAX_EVENT_CARDS = 10
 
+function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
+  return (
+    <div className="flex min-h-[120px] items-center justify-center border border-[#1b2938] bg-[#080d13] p-2">
+      <ins
+        className="kakao_ad_area"
+        style={{ display: "none" }}
+        data-ad-unit={unit}
+        data-ad-width={width}
+        data-ad-height={height}
+      />
+    </div>
+  )
+}
+
 function toCandle(item: unknown[]): Candle {
   return {
     time: Number(item[0]),
@@ -330,6 +344,17 @@ export default function BitcoinEntryChart() {
   const [selectedSignalKey, setSelectedSignalKey] = useState("")
 
   useEffect(() => {
+    const scriptId = "kakao-ad-script"
+    if (document.getElementById(scriptId)) return
+
+    const script = document.createElement("script")
+    script.id = scriptId
+    script.async = true
+    script.src = "https://t1.kakaocdn.net/kas/static/ba.min.js"
+    document.body.appendChild(script)
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
 
     async function loadCandles() {
@@ -535,6 +560,12 @@ export default function BitcoinEntryChart() {
                 )
               })
             )}
+          </div>
+        </section>
+
+        <section className="border-b border-[#1b232e] bg-[#06090d] px-4 py-4">
+          <div className="mx-auto w-full max-w-[640px]">
+            <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
           </div>
         </section>
 
@@ -758,6 +789,12 @@ export default function BitcoinEntryChart() {
                 <p className="text-xs uppercase text-zinc-500">Mode</p>
                 <p className="text-lg font-semibold text-zinc-200">{selectedSignal?.direction ?? "WAIT"}</p>
               </div>
+            </div>
+          </div>
+
+          <div className="border-t border-[#1b232e] bg-[#06090d] px-4 py-5">
+            <div className="mx-auto w-full max-w-[300px]">
+              <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
             </div>
           </div>
         </section>
