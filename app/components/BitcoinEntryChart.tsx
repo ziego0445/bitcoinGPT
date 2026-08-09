@@ -37,7 +37,7 @@ interface SupportLevel {
 }
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h"]
-const CANDLE_LIMIT = 120
+const CANDLE_LIMIT = 121
 const MAX_EVENT_CARDS = 10
 
 function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
@@ -301,13 +301,13 @@ function signalReasons(signal?: EntrySignal) {
 
 function getDisplaySignals(signals: EntrySignal[]) {
   const recentCandidates = signals
-    .filter((signal) => signal.score >= 64 || signal.pattern === "panic" || signal.pattern === "avoid")
+    .filter((signal) => signal.score >= 64 || signal.pattern === "avoid")
     .sort((a, b) => b.index - a.index)
 
   const picked: EntrySignal[] = []
 
   for (const signal of recentCandidates) {
-    const tooClose = picked.some((item) => Math.abs(item.index - signal.index) < 7)
+    const tooClose = picked.some((item) => Math.abs(item.index - signal.index) < 9)
     if (!tooClose) {
       picked.push(signal)
     }
@@ -397,7 +397,10 @@ export default function BitcoinEntryChart() {
     }
   }, [timeframe])
 
-  const signals = useMemo(() => detectSignals(candles), [candles])
+  // The final Binance candle is still forming. Signals use only closed candles,
+  // while the chart keeps the live candle visible for price context.
+  const closedCandles = useMemo(() => candles.slice(0, -1), [candles])
+  const signals = useMemo(() => detectSignals(closedCandles), [closedCandles])
   const displaySignals = useMemo(() => getDisplaySignals(signals), [signals])
   const latestSignal = displaySignals.at(-1)
   const selectedSignal = displaySignals.find((signal) => signalKey(signal) === selectedSignalKey) ?? latestSignal
@@ -453,6 +456,8 @@ export default function BitcoinEntryChart() {
   const selectedSignalNumber = selectedSignal
     ? displaySignals.findIndex((signal) => signalKey(signal) === signalKey(selectedSignal)) + 1
     : 0
+  const updateTime = candles.at(-1)?.time
+  const signalTone = selectedSignal?.direction === "LONG" ? "text-cyan-200" : "text-amber-200"
 
   useEffect(() => {
     if (!displaySignals.length) {
@@ -467,53 +472,59 @@ export default function BitcoinEntryChart() {
   }, [displaySignals, selectedSignalKey])
 
   return (
-    <main className="min-h-screen bg-[#05070a] text-zinc-100">
-      <div className="flex min-h-screen flex-col">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#1b232e] bg-[#080b10]/95 px-4 py-3 shadow-[0_1px_0_rgba(255,255,255,0.03)]">
+    <main className="min-h-screen bg-[#06080c] text-zinc-100">
+      <div className="mx-auto flex min-h-screen max-w-[1680px] flex-col border-x border-[#182330] bg-[#080b10] shadow-[0_0_80px_rgba(0,0,0,0.35)]">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#1d2a38] bg-[#0b1017] px-4 py-4 lg:px-6">
           <div className="flex items-center gap-4">
-            <div className="h-9 w-1 bg-cyan-300" />
+            <div className="grid h-11 w-11 place-items-center border border-cyan-300/50 bg-cyan-300/10 text-sm font-black text-cyan-200">B</div>
             <div>
-              <p className="text-xs uppercase text-zinc-500">BTCUSDT Perpetual</p>
-              <h1 className="text-xl font-semibold text-zinc-50">Entry Signal Terminal</h1>
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-300/75">BTCUSDT / Binance</p>
+              <h1 className="mt-0.5 text-xl font-semibold text-zinc-50">Bitcoin Entry Radar</h1>
             </div>
-            <div className="hidden h-8 items-center border-l border-[#243140] pl-4 md:flex">
-              <span className={`text-sm font-semibold ${priceMove >= 0 ? "text-emerald-300" : "text-red-300"}`}>
-                {priceMove >= 0 ? "+" : ""}
-                {priceMove.toFixed(2)}%
-              </span>
+            <div className="hidden border-l border-[#263545] pl-4 sm:block">
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-500">Live move</p>
+              <p className={`mt-0.5 text-sm font-semibold ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <div className="hidden text-right md:block">
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-500">Last update</p>
+              <p className="mt-0.5 text-xs text-zinc-300">{updateTime ? formatCardTime(updateTime) : "--:--"}</p>
+            </div>
+            <div className="flex rounded-md border border-[#263545] bg-[#070b10] p-1">
             {TIMEFRAMES.map((item) => (
               <button
                 key={item}
                 type="button"
                 onClick={() => setTimeframe(item)}
-                className={`h-9 min-w-12 border px-3 text-sm font-semibold transition ${
+                className={`h-8 min-w-11 rounded px-3 text-sm font-semibold transition ${
                   timeframe === item
-                    ? "border-cyan-300 bg-cyan-300 text-[#061014] shadow-[0_0_22px_rgba(103,232,249,0.28)]"
-                    : "border-[#263241] bg-[#0e131a] text-zinc-400 hover:border-cyan-700 hover:text-zinc-100"
+                    ? "bg-cyan-300 text-[#061014] shadow-[0_0_18px_rgba(103,232,249,0.22)]"
+                    : "text-zinc-500 hover:bg-[#141d28] hover:text-zinc-100"
                 }`}
               >
                 {item}
               </button>
             ))}
-          </div>
-        </div>
-
-        <section className="border-b border-[#1b232e] bg-[#070a0f] px-4 py-4">
-          <div className="mb-3 flex items-end justify-between gap-4">
-            <div>
-              <p className="text-xs uppercase text-zinc-500">Recent 10 Events</p>
-              <h2 className="text-lg font-semibold text-zinc-50">최근 발생 포인트</h2>
             </div>
-            <p className="hidden text-sm text-zinc-500 md:block">카드를 누르면 차트의 해당 위치가 강조됩니다.</p>
+          </div>
+        </header>
+
+        <section className="border-b border-[#1d2a38] bg-[#090e14] px-4 py-5 lg:px-6">
+          <div className="mb-4 flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-zinc-500">Signal timeline</p>
+              <h2 className="mt-1 text-lg font-semibold text-zinc-50">최근 확정 신호</h2>
+            </div>
+            <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-2 w-2 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
             {displaySignals.length === 0 ? (
-              <div className="border border-[#1d2936] bg-[#0a0f16] p-4 text-sm text-zinc-500 xl:col-span-5">
-                아직 조건에 맞는 최근 이벤트가 없습니다. 차트는 30초마다 자동 갱신됩니다.
+              <div className="border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500 xl:col-span-5">
+                최근 확정 봉에서 기준을 만족하는 진입 참고 신호가 없습니다.
               </div>
             ) : (
               [...displaySignals].reverse().map((signal) => {
@@ -527,17 +538,17 @@ export default function BitcoinEntryChart() {
                     key={signalKey(signal)}
                     type="button"
                     onClick={() => setSelectedSignalKey(signalKey(signal))}
-                    className={`group min-h-[126px] border p-4 text-left transition ${
+                    className={`group relative min-h-[154px] overflow-hidden border p-4 text-left transition ${
                       selected
                         ? accent === "cyan"
-                          ? "border-cyan-300 bg-cyan-300/10 shadow-[0_0_24px_rgba(103,232,249,0.14)]"
-                          : "border-amber-300 bg-amber-300/10 shadow-[0_0_24px_rgba(251,191,36,0.12)]"
-                        : "border-[#1d2936] bg-[#0a0f16] hover:border-[#334155] hover:bg-[#0d141d]"
+                          ? "border-cyan-300/80 bg-[#0d1b23] shadow-[inset_3px_0_0_#67e8f9,0_0_28px_rgba(103,232,249,0.1)]"
+                          : "border-amber-300/80 bg-[#1a160c] shadow-[inset_3px_0_0_#fbbf24,0_0_28px_rgba(251,191,36,0.08)]"
+                        : "border-[#202d3b] bg-[#0b1119] hover:border-[#3b5065] hover:bg-[#101822]"
                     }`}
                   >
-                    <div className="mb-3 flex items-center justify-between">
+                    <div className="mb-4 flex items-center justify-between">
                       <span
-                        className={`grid h-7 w-7 place-items-center text-xs font-black ${
+                        className={`grid h-7 w-7 place-items-center rounded-sm text-xs font-black ${
                           signal.direction === "LONG" ? "bg-cyan-300 text-[#061014]" : "bg-amber-300 text-[#1a1202]"
                         }`}
                       >
@@ -545,12 +556,12 @@ export default function BitcoinEntryChart() {
                       </span>
                       <span className="text-xs text-zinc-500">{candle ? formatCardTime(candle.time) : "--:--"}</span>
                     </div>
-                    <p className={`text-sm font-semibold ${signal.direction === "LONG" ? "text-cyan-200" : "text-amber-200"}`}>
+                    <p className={`text-[11px] font-bold uppercase tracking-[0.12em] ${signal.direction === "LONG" ? "text-cyan-200" : "text-amber-200"}`}>
                       {signalTitle(signal)}
                     </p>
-                    <p className="mt-1 text-xl font-semibold text-zinc-50">{candle ? formatPrice(candle.close) : "-"}</p>
-                    <p className="mt-2 text-xs leading-5 text-zinc-400">{shortReason(signal)}</p>
-                    <div className="mt-3 h-1 bg-[#111923]">
+                    <p className="mt-1 text-xl font-semibold tracking-tight text-zinc-50">{candle ? formatPrice(candle.close) : "-"}</p>
+                    <p className="mt-2 line-clamp-1 text-xs leading-5 text-zinc-400">{shortReason(signal)}</p>
+                    <div className="mt-4 h-1.5 rounded-full bg-[#17202b]">
                       <div
                         className={signal.direction === "LONG" ? "h-full bg-cyan-300" : "h-full bg-amber-300"}
                         style={{ width: `${signal.score}%` }}
@@ -563,15 +574,21 @@ export default function BitcoinEntryChart() {
           </div>
         </section>
 
-        <section className="border-b border-[#1b232e] bg-[#06090d] px-4 py-4">
+        <section className="border-b border-[#1d2a38] bg-[#070b10] px-4 py-4">
           <div className="mx-auto w-full max-w-[640px]">
             <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
           </div>
         </section>
 
-        <section className="grid flex-1 grid-rows-[1fr_auto]">
-          <div className="relative min-h-[560px] overflow-hidden bg-[#070a0f]">
+        <section className="grid flex-1 grid-rows-[1fr_auto] bg-[#070b10] px-4 py-5 lg:px-6">
+          <div className="relative min-h-[560px] overflow-hidden border border-[#1d2a38] bg-[#080d13] shadow-[0_24px_55px_rgba(0,0,0,0.22)]">
             <div className="pointer-events-none absolute inset-0 opacity-70 [background-image:linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] [background-size:40px_40px]" />
+            <div className="pointer-events-none absolute left-4 top-4 z-10 flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.1em]">
+              <span className="border border-[#2b3c4e] bg-[#0a1017]/90 px-2 py-1 text-zinc-400">가격</span>
+              <span className="border border-[#2b3c4e] bg-[#0a1017]/90 px-2 py-1 text-zinc-400">거래량</span>
+              <span className="border border-cyan-400/40 bg-cyan-300/10 px-2 py-1 text-cyan-200">진입 후보</span>
+              <span className="border border-amber-400/40 bg-amber-300/10 px-2 py-1 text-amber-200">주의</span>
+            </div>
             {loading && candles.length === 0 ? (
               <div className="relative flex h-full items-center justify-center text-zinc-500">Loading chart...</div>
             ) : error ? (
@@ -758,41 +775,40 @@ export default function BitcoinEntryChart() {
             )}
           </div>
 
-          <div className="grid gap-3 border-t border-[#1b232e] bg-[#080b10] px-4 py-4 md:grid-cols-[180px_1fr_220px] md:items-center">
-            <div className="border-l border-cyan-300 pl-4">
-              <p className="text-xs uppercase text-zinc-500">Last Price</p>
-              <p className="text-3xl font-semibold text-zinc-50">{currentPrice ? formatPrice(currentPrice) : "-"}</p>
+          <div className="grid gap-4 border-x border-b border-[#1d2a38] bg-[#0b1119] p-4 lg:grid-cols-[210px_1fr_250px] lg:items-center">
+            <div className="border-l-2 border-cyan-300 pl-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Last price</p>
+              <p className="mt-1 text-3xl font-semibold tracking-tight text-zinc-50">{currentPrice ? formatPrice(currentPrice) : "-"}</p>
+              <p className={`mt-1 text-xs font-semibold ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}% 현재 진행 봉</p>
             </div>
 
-            <div className="min-w-0">
-              <p className="text-xs uppercase text-zinc-500">Signal</p>
+            <div className="min-w-0 border-y border-[#202d3b] py-3 lg:border-y-0 lg:border-x lg:px-5 lg:py-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Selected signal</p>
               <p
-                className={`text-xl font-semibold ${
-                  latestSignal?.direction === "LONG" ? "text-cyan-300" : "text-amber-300"
-                }`}
+                className={`mt-1 text-xl font-semibold ${signalTone}`}
               >
                 {selectedSignal ? `${selectedSignalNumber}. ${signalTitle(selectedSignal)} ${Math.round(selectedSignal.score)}점` : "관망"}
               </p>
-              <p className="text-sm text-zinc-400">
+              <p className="mt-1 text-sm leading-6 text-zinc-400">
                 {selectedSignal?.detail ?? "거래량, 지지선, 쌍바닥, 다이버전스 조건이 아직 뚜렷하지 않습니다."}
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 text-right">
+            <div className="grid grid-cols-2 gap-4 text-right">
               <div>
-                <p className="text-xs uppercase text-zinc-500">Volume</p>
-                <p className={`text-lg font-semibold ${volumeRatio >= 1.5 ? "text-amber-300" : "text-zinc-200"}`}>
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Volume</p>
+                <p className={`mt-1 text-lg font-semibold ${volumeRatio >= 1.5 ? "text-amber-300" : "text-zinc-200"}`}>
                   {volumeRatio ? `${volumeRatio.toFixed(2)}x` : "-"}
                 </p>
               </div>
               <div>
-                <p className="text-xs uppercase text-zinc-500">Mode</p>
-                <p className="text-lg font-semibold text-zinc-200">{selectedSignal?.direction ?? "WAIT"}</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Mode</p>
+                <p className={`mt-1 text-lg font-semibold ${signalTone}`}>{selectedSignal?.direction ?? "WAIT"}</p>
               </div>
             </div>
           </div>
 
-          <div className="border-t border-[#1b232e] bg-[#06090d] px-4 py-5">
+          <div className="border-x border-b border-[#1d2a38] bg-[#080d13] px-4 py-5">
             <div className="mx-auto w-full max-w-[300px]">
               <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
             </div>

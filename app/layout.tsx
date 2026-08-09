@@ -5,8 +5,8 @@ import type React from "react"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata = {
-  title: "BTC Entry Chart",
-  description: "Bitcoin chart for entry reference",
+  title: "Bitcoin Entry Radar",
+  description: "BTCUSDT entry-reference signals based on volume, support, and price action.",
 }
 
 export default function RootLayout({
