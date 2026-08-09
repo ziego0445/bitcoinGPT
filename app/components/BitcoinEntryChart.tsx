@@ -38,6 +38,7 @@ interface SupportLevel {
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h"]
 const CANDLE_LIMIT = 120
+const MAX_EVENT_CARDS = 10
 
 function toCandle(item: unknown[]): Candle {
   return {
@@ -285,21 +286,40 @@ function signalReasons(signal?: EntrySignal) {
 }
 
 function getDisplaySignals(signals: EntrySignal[]) {
-  const candidates = signals
+  const recentCandidates = signals
     .filter((signal) => signal.score >= 64 || signal.pattern === "panic" || signal.pattern === "avoid")
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.index - a.index)
 
   const picked: EntrySignal[] = []
 
-  for (const signal of candidates) {
-    const tooClose = picked.some((item) => Math.abs(item.index - signal.index) < 9)
+  for (const signal of recentCandidates) {
+    const tooClose = picked.some((item) => Math.abs(item.index - signal.index) < 7)
     if (!tooClose) {
       picked.push(signal)
     }
-    if (picked.length >= 9) break
+    if (picked.length >= MAX_EVENT_CARDS) break
   }
 
   return picked.sort((a, b) => a.index - b.index)
+}
+
+function shortReason(signal: EntrySignal) {
+  const reasons: Record<Pattern, string> = {
+    panic: "거래량 폭발 + 마지막 장대봉",
+    "double-bottom": "직전 저점 재방문",
+    divergence: "저점 대비 하락 힘 둔화",
+    "slow-bottom": "거래량/하락폭 감소",
+    avoid: "첫 장대봉 과열",
+  }
+
+  return reasons[signal.pattern]
+}
+
+function formatCardTime(time: number) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(time))
 }
 
 export default function BitcoinEntryChart() {
@@ -409,6 +429,18 @@ export default function BitcoinEntryChart() {
     ? displaySignals.findIndex((signal) => signalKey(signal) === signalKey(selectedSignal)) + 1
     : 0
 
+  useEffect(() => {
+    if (!displaySignals.length) {
+      setSelectedSignalKey("")
+      return
+    }
+
+    const selectedStillExists = displaySignals.some((signal) => signalKey(signal) === selectedSignalKey)
+    if (!selectedSignalKey || !selectedStillExists) {
+      setSelectedSignalKey(signalKey(displaySignals[displaySignals.length - 1]))
+    }
+  }, [displaySignals, selectedSignalKey])
+
   return (
     <main className="min-h-screen bg-[#05070a] text-zinc-100">
       <div className="flex min-h-screen flex-col">
@@ -444,8 +476,70 @@ export default function BitcoinEntryChart() {
           </div>
         </div>
 
+        <section className="border-b border-[#1b232e] bg-[#070a0f] px-4 py-4">
+          <div className="mb-3 flex items-end justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase text-zinc-500">Recent 10 Events</p>
+              <h2 className="text-lg font-semibold text-zinc-50">최근 발생 포인트</h2>
+            </div>
+            <p className="hidden text-sm text-zinc-500 md:block">카드를 누르면 차트의 해당 위치가 강조됩니다.</p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            {displaySignals.length === 0 ? (
+              <div className="border border-[#1d2936] bg-[#0a0f16] p-4 text-sm text-zinc-500 xl:col-span-5">
+                아직 조건에 맞는 최근 이벤트가 없습니다. 차트는 30초마다 자동 갱신됩니다.
+              </div>
+            ) : (
+              [...displaySignals].reverse().map((signal) => {
+                const candle = candles[signal.index]
+                const selected = selectedSignal ? signalKey(signal) === signalKey(selectedSignal) : false
+                const eventNumber = displaySignals.findIndex((item) => signalKey(item) === signalKey(signal)) + 1
+                const accent = signal.direction === "LONG" ? "cyan" : "amber"
+
+                return (
+                  <button
+                    key={signalKey(signal)}
+                    type="button"
+                    onClick={() => setSelectedSignalKey(signalKey(signal))}
+                    className={`group min-h-[126px] border p-4 text-left transition ${
+                      selected
+                        ? accent === "cyan"
+                          ? "border-cyan-300 bg-cyan-300/10 shadow-[0_0_24px_rgba(103,232,249,0.14)]"
+                          : "border-amber-300 bg-amber-300/10 shadow-[0_0_24px_rgba(251,191,36,0.12)]"
+                        : "border-[#1d2936] bg-[#0a0f16] hover:border-[#334155] hover:bg-[#0d141d]"
+                    }`}
+                  >
+                    <div className="mb-3 flex items-center justify-between">
+                      <span
+                        className={`grid h-7 w-7 place-items-center text-xs font-black ${
+                          signal.direction === "LONG" ? "bg-cyan-300 text-[#061014]" : "bg-amber-300 text-[#1a1202]"
+                        }`}
+                      >
+                        {eventNumber}
+                      </span>
+                      <span className="text-xs text-zinc-500">{candle ? formatCardTime(candle.time) : "--:--"}</span>
+                    </div>
+                    <p className={`text-sm font-semibold ${signal.direction === "LONG" ? "text-cyan-200" : "text-amber-200"}`}>
+                      {signalTitle(signal)}
+                    </p>
+                    <p className="mt-1 text-xl font-semibold text-zinc-50">{candle ? formatPrice(candle.close) : "-"}</p>
+                    <p className="mt-2 text-xs leading-5 text-zinc-400">{shortReason(signal)}</p>
+                    <div className="mt-3 h-1 bg-[#111923]">
+                      <div
+                        className={signal.direction === "LONG" ? "h-full bg-cyan-300" : "h-full bg-amber-300"}
+                        style={{ width: `${signal.score}%` }}
+                      />
+                    </div>
+                  </button>
+                )
+              })
+            )}
+          </div>
+        </section>
+
         <section className="grid flex-1 grid-rows-[1fr_auto]">
-          <div className="relative min-h-[620px] overflow-hidden bg-[#070a0f]">
+          <div className="relative min-h-[560px] overflow-hidden bg-[#070a0f]">
             <div className="pointer-events-none absolute inset-0 opacity-70 [background-image:linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] [background-size:40px_40px]" />
             {loading && candles.length === 0 ? (
               <div className="relative flex h-full items-center justify-center text-zinc-500">Loading chart...</div>
@@ -552,6 +646,18 @@ export default function BitcoinEntryChart() {
                       onClick={() => setSelectedSignalKey(signalKey(signal))}
                       className="cursor-pointer"
                     >
+                      {selected && (
+                        <line
+                          x1={x}
+                          x2={x}
+                          y1={chart.padding.top}
+                          y2={chart.priceHeight + chart.gap + chart.volumeHeight}
+                          stroke={color}
+                          strokeDasharray="8 8"
+                          strokeOpacity="0.38"
+                          strokeWidth="1.4"
+                        />
+                      )}
                       <circle cx={x} cy={y} r={selected ? "10" : "8"} fill="#071017" stroke={color} strokeWidth="2" />
                       <circle cx={x} cy={y} r={selected ? "4" : "3"} fill={color} />
                       <text x={x} y={y + 22} fill={color} fontSize="11" fontWeight="800" textAnchor="middle">
