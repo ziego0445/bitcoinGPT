@@ -1,0 +1,7 @@
+[build]
+  command = "pnpm build"
+  publish = "out"
+  functions = "netlify/functions"
+
+[functions."check-bitcoin-signal"]
+  schedule = "*/5 * * * *"
