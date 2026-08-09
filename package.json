@@ -9,16 +9,9 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@heroicons/react": "^2.2.0",
-    "firebase": "9",
-    "html-to-image": "^1.11.11",
-    "html2canvas": "^1.4.1",
     "next": "15.1.0",
-    "openai": "^4.82.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "recharts": "^2.15.1",
-    "tailwindcss-animate": "^1.0.7"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

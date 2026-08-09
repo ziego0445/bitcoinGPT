@@ -1,12 +1,12 @@
 import "./globals.css"
 import { Inter } from "next/font/google"
-import type React from "react" // Import React
+import type React from "react"
 
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata = {
-  title: "비트코인 트레이딩 인사이트",
-  description: "실시간 비트코인 차트 분석 및 트레이딩 시그널",
+  title: "BTC Entry Chart",
+  description: "Bitcoin chart for entry reference",
 }
 
 export default function RootLayout({
@@ -16,8 +16,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ko" className="dark">
-      <body className={`${inter.className} bg-gray-900 text-gray-100`}>{children}</body>
+      <body className={inter.className}>{children}</body>
     </html>
   )
 }
-
