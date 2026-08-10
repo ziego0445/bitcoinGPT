@@ -771,6 +771,9 @@ export default function BitcoinEntryChart() {
               <span className="rounded-full border border-[#28394b] bg-[#0a1017]/90 px-2.5 py-1 text-zinc-400">거래량</span>
               <span className="rounded-full border border-cyan-400/30 bg-cyan-300/10 px-2.5 py-1 text-cyan-200/90">진입 후보</span>
               <span className="rounded-full border border-amber-400/30 bg-amber-300/10 px-2.5 py-1 text-amber-200/90">주의</span>
+              <span className="rounded-full border border-cyan-400/30 bg-cyan-300/10 px-2.5 py-1 text-cyan-200/90">B 가상매수</span>
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-300/10 px-2.5 py-1 text-emerald-200/90">S 익절</span>
+              <span className="rounded-full border border-rose-400/30 bg-rose-300/10 px-2.5 py-1 text-rose-200/90">S 손절</span>
             </div>
             {loading && candles.length === 0 ? (
               <div className="relative flex h-full items-center justify-center text-zinc-500">Loading chart...</div>
@@ -941,6 +944,109 @@ export default function BitcoinEntryChart() {
                           - {reason}
                         </text>
                       ))}
+                    </g>
+                  )
+                })()}
+
+                {paperState && (() => {
+                  const spacing = candles.length > 1 ? candles[1].time - candles[0].time : Infinity
+
+                  // Maps a real trade timestamp onto the currently displayed candle set —
+                  // works regardless of which timeframe the chart is showing, since paper
+                  // trades always run on 5m data but the chart can be on 15m/1h/4h.
+                  const indexAtTime = (time: number) => {
+                    if (!candles.length || time < candles[0].time) return -1
+                    let found = -1
+                    for (let i = 0; i < candles.length; i += 1) {
+                      if (candles[i].time <= time) found = i
+                      else break
+                    }
+                    if (found === candles.length - 1 && time - candles[found].time > spacing * 2) return -1
+                    return found
+                  }
+
+                  const xAt = (index: number) => chart.padding.left + index * chart.candleWidth + chart.candleWidth / 2
+                  const yAt = (price: number) => chart.padding.top + priceY(price, chart.min, chart.max, chart.priceHeight)
+
+                  const openPosition = paperState.openPosition
+                  const openEntryIndex = openPosition ? indexAtTime(openPosition.entryTime) : -1
+
+                  return (
+                    <g>
+                      {openPosition && (
+                        <>
+                          {openPosition.takeProfit >= chart.min && openPosition.takeProfit <= chart.max && (
+                            <g>
+                              <line
+                                x1={chart.padding.left}
+                                x2={chart.width - chart.padding.right}
+                                y1={yAt(openPosition.takeProfit)}
+                                y2={yAt(openPosition.takeProfit)}
+                                stroke="#34d399"
+                                strokeDasharray="5 5"
+                                strokeWidth="1.4"
+                                strokeOpacity="0.85"
+                              />
+                              <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.takeProfit) + 4} fill="#34d399" fontSize="11" fontWeight="800">
+                                S {formatPrice(openPosition.takeProfit)}
+                              </text>
+                            </g>
+                          )}
+                          {openPosition.stopLoss >= chart.min && openPosition.stopLoss <= chart.max && (
+                            <g>
+                              <line
+                                x1={chart.padding.left}
+                                x2={chart.width - chart.padding.right}
+                                y1={yAt(openPosition.stopLoss)}
+                                y2={yAt(openPosition.stopLoss)}
+                                stroke="#fb7185"
+                                strokeDasharray="5 5"
+                                strokeWidth="1.4"
+                                strokeOpacity="0.85"
+                              />
+                              <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.stopLoss) + 4} fill="#fb7185" fontSize="11" fontWeight="800">
+                                S {formatPrice(openPosition.stopLoss)}
+                              </text>
+                            </g>
+                          )}
+                          {openEntryIndex >= 0 && (
+                            <g>
+                              <circle cx={xAt(openEntryIndex)} cy={yAt(openPosition.entryPrice)} r="9" fill="#071017" stroke="#67e8f9" strokeWidth="2" />
+                              <text x={xAt(openEntryIndex)} y={yAt(openPosition.entryPrice) + 4} fill="#67e8f9" fontSize="11" fontWeight="800" textAnchor="middle">
+                                B
+                              </text>
+                            </g>
+                          )}
+                        </>
+                      )}
+
+                      {paperState.trades.slice(-20).map((trade) => {
+                        const entryIndex = indexAtTime(trade.entryTime)
+                        const exitIndex = indexAtTime(trade.exitTime)
+                        const won = trade.exitReason === "take-profit"
+                        const exitColor = won ? "#34d399" : "#fb7185"
+
+                        return (
+                          <g key={`${trade.entryTime}-${trade.exitTime}`}>
+                            {entryIndex >= 0 && (
+                              <g>
+                                <circle cx={xAt(entryIndex)} cy={yAt(trade.entryPrice)} r="8" fill="#071017" stroke="#67e8f9" strokeWidth="1.6" />
+                                <text x={xAt(entryIndex)} y={yAt(trade.entryPrice) + 4} fill="#67e8f9" fontSize="10" fontWeight="800" textAnchor="middle">
+                                  B
+                                </text>
+                              </g>
+                            )}
+                            {exitIndex >= 0 && (
+                              <g>
+                                <circle cx={xAt(exitIndex)} cy={yAt(trade.exitPrice)} r="8" fill="#071017" stroke={exitColor} strokeWidth="1.6" />
+                                <text x={xAt(exitIndex)} y={yAt(trade.exitPrice) + 4} fill={exitColor} fontSize="10" fontWeight="800" textAnchor="middle">
+                                  S
+                                </text>
+                              </g>
+                            )}
+                          </g>
+                        )
+                      })}
                     </g>
                   )
                 })()}
