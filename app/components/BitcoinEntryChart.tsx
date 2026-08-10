@@ -93,7 +93,11 @@ function lowerWickRatio(candle: Candle) {
 
 function momentumAt(candles: Candle[], index: number) {
   const lookback = Math.max(0, index - 5)
-  return candles[index].close - candles[lookback].close
+  const base = candles[lookback].close
+  if (!base) return 0
+  // Normalized to a % move so momentum at two different price/volatility regimes
+  // (e.g. two separate pivot lows) is comparable — a raw dollar diff isn't.
+  return (candles[index].close - base) / base
 }
 
 function getPivotLows(candles: Candle[], endIndex = candles.length - 1): PivotLow[] {
@@ -161,13 +165,21 @@ function detectSignals(candles: Candle[]): EntrySignal[] {
     const rangeExpansion = avgRange > 0 ? rangeSize(current) / avgRange : 0
     const freshLow = current.low <= Math.min(...recent.map((candle) => candle.low))
     const lastBody = bodySize(current)
-    const firstBody = bodySize(lastFour[0])
-    const fallingCloses = lastFour.every((candle, candleIndex) => {
-      if (candleIndex === 0) return true
-      return candle.close <= lastFour[candleIndex - 1].close
-    })
-    const firstCandleDominates = firstBody > avgBody * 1.7 && firstBody > lastBody * 1.25
-    const highSellVolumeIntoRetest = lastFour.every((candle) => candle.close < candle.open && candle.volume > avgVolume * 1.15)
+    const firstCandle = lastFour[0]
+    const firstBody = bodySize(firstCandle)
+    // Chapter 2 (첫봉이 가장 길 때) shows *stepped* declines with intermittent bounces,
+    // not an unbroken run of lower closes — requiring every close to fall in a row missed
+    // that pattern entirely. Instead: net move over the window is still down, and no bounce
+    // has erased the origin candle's move.
+    const steppedDecline =
+      current.close < firstCandle.close &&
+      lastFour.slice(1).every((candle) => candle.close <= firstCandle.open)
+    // The PDF's criterion for "first candle dominates" is volume, not just body size —
+    // a big-bodied first candle without matching volume dominance isn't the pattern described.
+    const firstVolumeDominates =
+      firstCandle.volume > avgVolume * 1.3 &&
+      firstCandle.volume >= Math.max(...lastFour.slice(1).map((candle) => candle.volume))
+    const firstCandleDominates = firstBody > avgBody * 1.7 && firstBody > lastBody * 1.25 && firstVolumeDominates
     const supports = getSupportLevels(candles.slice(0, index + 1))
     const supportNearby = isNearSupport(current.low, supports)
     const pivots = getPivotLows(candles, index - 1)
@@ -178,18 +190,35 @@ function detectSignals(candles: Candle[]): EntrySignal[] {
     const slightlyBrokenDoubleBottom = previousPivot
       ? current.low < previousPivot.price && (previousPivot.price - current.low) / previousPivot.price <= 0.012
       : false
+    // Only a genuine retest (price revisiting a prior pivot low) qualifies for the "heavy
+    // sell volume grinding into the retest" warning — applying it to any 4 red candles also
+    // caught first-time capitulation flushes, which is exactly the Chapter 1 "best entry"
+    // pattern this was wrongly overriding.
+    const inRetestZone = previousPivot
+      ? Math.abs(current.low - previousPivot.price) / previousPivot.price <= 0.02
+      : false
+    const highSellVolumeIntoRetest =
+      inRetestZone && lastFour.every((candle) => candle.close < candle.open && candle.volume > avgVolume * 1.15)
     const currentMomentum = momentumAt(candles, index)
     const bullishDivergence = previousPivot
       ? current.low <= previousPivot.price * 1.004 && currentMomentum > previousPivot.momentum
       : false
-    const retestVolumeOk = previousPivot ? current.volume <= previousPivot.volume * 1.15 || volumeSpike <= 1.35 : false
+    // Both volume frames (vs. the original pivot candle, and vs. the recent baseline) must
+    // agree the retest isn't overloaded with sell volume — an OR here let heavy-volume
+    // retests through whenever the recent baseline was itself already elevated.
+    const retestVolumeOk = previousPivot
+      ? current.volume <= previousPivot.volume * 1.15 && volumeSpike <= 1.6
+      : false
     const wickOk = lowerWickRatio(current) >= 0.34
     const sellingSlows =
       current.volume < avgVolume * 0.95 &&
       bodySize(current) < avgBody * 0.9 &&
       rangeSize(current) < avgRange * 0.95
+    // PDF: a panic reversal candle is "best" when it's either much longer OR much shorter
+    // (exhaustion doji) than recent candles — only the long-body case was recognized before.
+    const bodyExtreme = bodyExpansion >= 1.1 || bodyExpansion <= 0.4
 
-    if ((firstCandleDominates && fallingCloses) || highSellVolumeIntoRetest) {
+    if ((firstCandleDominates && steppedDecline) || highSellVolumeIntoRetest) {
       signals.push({
         index,
         direction: "WAIT",
@@ -201,11 +230,11 @@ function detectSignals(candles: Candle[]): EntrySignal[] {
       continue
     }
 
-    if (freshLow && volumeSpike >= 2.0 && rangeExpansion >= 1.45 && bodyExpansion >= 1.1 && (wickOk || supportNearby)) {
+    if (freshLow && volumeSpike >= 2.0 && rangeExpansion >= 1.45 && bodyExtreme && (wickOk || supportNearby)) {
       signals.push({
         index,
         direction: "LONG",
-        score: clamp(70 + volumeSpike * 5 + rangeExpansion * 4 + bodyExpansion * 3 + (supportNearby ? 6 : 0), 70, 96),
+        score: clamp(70 + volumeSpike * 5 + rangeExpansion * 4 + Math.abs(bodyExpansion - 1) * 3 + (supportNearby ? 6 : 0), 70, 96),
         pattern: "panic",
         label: "PANIC",
         detail: "마지막 장대봉, 거래량 폭발, 지지/꼬리 조건이 겹친 패닉셀 반등 후보.",
@@ -301,7 +330,7 @@ function signalReasons(signal?: EntrySignal) {
 
 function getDisplaySignals(signals: EntrySignal[]) {
   const recentCandidates = signals
-    .filter((signal) => signal.score >= 64 || signal.pattern === "avoid")
+    .filter((signal) => signal.score >= 85 || signal.pattern === "avoid")
     .sort((a, b) => b.index - a.index)
 
   const picked: EntrySignal[] = []
@@ -407,11 +436,11 @@ export default function BitcoinEntryChart() {
   const supportLevels = useMemo(() => getSupportLevels(candles), [candles])
   const chart = useMemo(() => {
     const width = 1200
-    const priceHeight = 590
-    const volumeHeight = 130
-    const gap = 18
+    const priceHeight = 360
+    const volumeHeight = 85
+    const gap = 16
     const height = priceHeight + volumeHeight + gap
-    const padding = { top: 18, right: 76, bottom: 28, left: 10 }
+    const padding = { top: 16, right: 68, bottom: 24, left: 8 }
     const innerWidth = width - padding.left - padding.right
     const prices = candles.flatMap((candle) => [candle.high, candle.low])
     const minPrice = Math.min(...prices)
@@ -472,37 +501,37 @@ export default function BitcoinEntryChart() {
   }, [displaySignals, selectedSignalKey])
 
   return (
-    <main className="min-h-screen bg-[#06080c] text-zinc-100">
-      <div className="mx-auto flex min-h-screen max-w-[1680px] flex-col border-x border-[#182330] bg-[#080b10] shadow-[0_0_80px_rgba(0,0,0,0.35)]">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#1d2a38] bg-[#0b1017] px-4 py-4 lg:px-6">
+    <main className="min-h-screen bg-[#05070a] px-3 py-6 text-zinc-100 sm:px-6 lg:px-10">
+      <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#1a2432] bg-[#0c1119] px-5 py-4 lg:px-7">
           <div className="flex items-center gap-4">
-            <div className="grid h-11 w-11 place-items-center border border-cyan-300/50 bg-cyan-300/10 text-sm font-black text-cyan-200">B</div>
+            <div className="grid h-10 w-10 place-items-center rounded-xl border border-cyan-300/30 bg-cyan-300/10 text-sm font-black text-cyan-200">B</div>
             <div>
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-300/75">BTCUSDT / Binance</p>
-              <h1 className="mt-0.5 text-xl font-semibold text-zinc-50">Bitcoin Entry Radar</h1>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-300/60">BTCUSDT · Binance</p>
+              <h1 className="mt-0.5 text-lg font-semibold text-zinc-50">Bitcoin Entry Radar</h1>
             </div>
-            <div className="hidden border-l border-[#263545] pl-4 sm:block">
-              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-500">Live move</p>
-              <p className={`mt-0.5 text-sm font-semibold ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+            <div className="hidden border-l border-[#232f3d] pl-4 sm:block">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">Live move</p>
+              <p className={`mt-0.5 text-sm font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
                 {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
               </p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <div className="hidden text-right md:block">
-              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-500">Last update</p>
-              <p className="mt-0.5 text-xs text-zinc-300">{updateTime ? formatCardTime(updateTime) : "--:--"}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">Last update</p>
+              <p className="mt-0.5 text-xs tabular-nums text-zinc-400">{updateTime ? formatCardTime(updateTime) : "--:--"}</p>
             </div>
-            <div className="flex rounded-md border border-[#263545] bg-[#070b10] p-1">
+            <div className="flex rounded-xl border border-[#232f3d] bg-[#080c12] p-1">
             {TIMEFRAMES.map((item) => (
               <button
                 key={item}
                 type="button"
                 onClick={() => setTimeframe(item)}
-                className={`h-8 min-w-11 rounded px-3 text-sm font-semibold transition ${
+                className={`h-8 min-w-11 rounded-lg px-3 text-sm font-medium transition ${
                   timeframe === item
-                    ? "bg-cyan-300 text-[#061014] shadow-[0_0_18px_rgba(103,232,249,0.22)]"
-                    : "text-zinc-500 hover:bg-[#141d28] hover:text-zinc-100"
+                    ? "bg-cyan-300/90 text-[#061014] shadow-[0_0_14px_rgba(103,232,249,0.18)]"
+                    : "text-zinc-500 hover:bg-[#141d28] hover:text-zinc-200"
                 }`}
               >
                 {item}
@@ -512,18 +541,18 @@ export default function BitcoinEntryChart() {
           </div>
         </header>
 
-        <section className="border-b border-[#1d2a38] bg-[#090e14] px-4 py-5 lg:px-6">
+        <section className="border-b border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
           <div className="mb-4 flex items-end justify-between gap-4">
             <div>
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-zinc-500">Signal timeline</p>
-              <h2 className="mt-1 text-lg font-semibold text-zinc-50">최근 확정 신호</h2>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Signal timeline</p>
+              <h2 className="mt-1 text-base font-semibold text-zinc-50">최근 확정 신호</h2>
             </div>
-            <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-2 w-2 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
+            <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
             {displaySignals.length === 0 ? (
-              <div className="border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500 xl:col-span-5">
+              <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500 xl:col-span-5">
                 최근 확정 봉에서 기준을 만족하는 진입 참고 신호가 없습니다.
               </div>
             ) : (
@@ -538,32 +567,32 @@ export default function BitcoinEntryChart() {
                     key={signalKey(signal)}
                     type="button"
                     onClick={() => setSelectedSignalKey(signalKey(signal))}
-                    className={`group relative min-h-[154px] overflow-hidden border p-4 text-left transition ${
+                    className={`group relative min-h-[142px] overflow-hidden rounded-xl border p-4 text-left transition ${
                       selected
                         ? accent === "cyan"
-                          ? "border-cyan-300/80 bg-[#0d1b23] shadow-[inset_3px_0_0_#67e8f9,0_0_28px_rgba(103,232,249,0.1)]"
-                          : "border-amber-300/80 bg-[#1a160c] shadow-[inset_3px_0_0_#fbbf24,0_0_28px_rgba(251,191,36,0.08)]"
-                        : "border-[#202d3b] bg-[#0b1119] hover:border-[#3b5065] hover:bg-[#101822]"
+                          ? "border-cyan-300/60 bg-[#0d1a22] shadow-[inset_2px_0_0_#67e8f9,0_10px_26px_rgba(103,232,249,0.06)]"
+                          : "border-amber-300/60 bg-[#191509] shadow-[inset_2px_0_0_#fbbf24,0_10px_26px_rgba(251,191,36,0.05)]"
+                        : "border-[#1c2734] bg-[#0b0f16] hover:border-[#33465a] hover:bg-[#0f141c]"
                     }`}
                   >
-                    <div className="mb-4 flex items-center justify-between">
+                    <div className="mb-3.5 flex items-center justify-between">
                       <span
-                        className={`grid h-7 w-7 place-items-center rounded-sm text-xs font-black ${
-                          signal.direction === "LONG" ? "bg-cyan-300 text-[#061014]" : "bg-amber-300 text-[#1a1202]"
+                        className={`grid h-6 w-6 place-items-center rounded-md text-[11px] font-bold ${
+                          signal.direction === "LONG" ? "bg-cyan-300/90 text-[#061014]" : "bg-amber-300/90 text-[#1a1202]"
                         }`}
                       >
                         {eventNumber}
                       </span>
-                      <span className="text-xs text-zinc-500">{candle ? formatCardTime(candle.time) : "--:--"}</span>
+                      <span className="text-xs tabular-nums text-zinc-500">{candle ? formatCardTime(candle.time) : "--:--"}</span>
                     </div>
-                    <p className={`text-[11px] font-bold uppercase tracking-[0.12em] ${signal.direction === "LONG" ? "text-cyan-200" : "text-amber-200"}`}>
+                    <p className={`text-[10px] font-semibold uppercase tracking-[0.1em] ${signal.direction === "LONG" ? "text-cyan-200/90" : "text-amber-200/90"}`}>
                       {signalTitle(signal)}
                     </p>
-                    <p className="mt-1 text-xl font-semibold tracking-tight text-zinc-50">{candle ? formatPrice(candle.close) : "-"}</p>
-                    <p className="mt-2 line-clamp-1 text-xs leading-5 text-zinc-400">{shortReason(signal)}</p>
-                    <div className="mt-4 h-1.5 rounded-full bg-[#17202b]">
+                    <p className="mt-1 text-lg font-semibold tracking-tight tabular-nums text-zinc-50">{candle ? formatPrice(candle.close) : "-"}</p>
+                    <p className="mt-2 line-clamp-1 text-xs leading-5 text-zinc-500">{shortReason(signal)}</p>
+                    <div className="mt-3.5 h-1 rounded-full bg-[#161f29]">
                       <div
-                        className={signal.direction === "LONG" ? "h-full bg-cyan-300" : "h-full bg-amber-300"}
+                        className={`h-full rounded-full ${signal.direction === "LONG" ? "bg-cyan-300/80" : "bg-amber-300/80"}`}
                         style={{ width: `${signal.score}%` }}
                       />
                     </div>
@@ -574,20 +603,20 @@ export default function BitcoinEntryChart() {
           </div>
         </section>
 
-        <section className="border-b border-[#1d2a38] bg-[#070b10] px-4 py-4">
+        <section className="border-b border-[#1a2432] bg-[#080b11] px-5 py-4">
           <div className="mx-auto w-full max-w-[640px]">
             <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
           </div>
         </section>
 
-        <section className="grid flex-1 grid-rows-[1fr_auto] bg-[#070b10] px-4 py-5 lg:px-6">
-          <div className="relative min-h-[560px] overflow-hidden border border-[#1d2a38] bg-[#080d13] shadow-[0_24px_55px_rgba(0,0,0,0.22)]">
-            <div className="pointer-events-none absolute inset-0 opacity-70 [background-image:linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] [background-size:40px_40px]" />
-            <div className="pointer-events-none absolute left-4 top-4 z-10 flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.1em]">
-              <span className="border border-[#2b3c4e] bg-[#0a1017]/90 px-2 py-1 text-zinc-400">가격</span>
-              <span className="border border-[#2b3c4e] bg-[#0a1017]/90 px-2 py-1 text-zinc-400">거래량</span>
-              <span className="border border-cyan-400/40 bg-cyan-300/10 px-2 py-1 text-cyan-200">진입 후보</span>
-              <span className="border border-amber-400/40 bg-amber-300/10 px-2 py-1 text-amber-200">주의</span>
+        <section className="flex flex-col gap-4 bg-[#080b11] px-5 py-5 lg:px-7">
+          <div className="relative aspect-[1200/461] max-h-[520px] min-h-[240px] w-full overflow-hidden rounded-2xl border border-[#1a2432] bg-[#0a0e15] shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
+            <div className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] [background-size:40px_40px]" />
+            <div className="pointer-events-none absolute left-4 top-4 z-10 flex flex-wrap items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em]">
+              <span className="rounded-full border border-[#28394b] bg-[#0a1017]/90 px-2.5 py-1 text-zinc-400">가격</span>
+              <span className="rounded-full border border-[#28394b] bg-[#0a1017]/90 px-2.5 py-1 text-zinc-400">거래량</span>
+              <span className="rounded-full border border-cyan-400/30 bg-cyan-300/10 px-2.5 py-1 text-cyan-200/90">진입 후보</span>
+              <span className="rounded-full border border-amber-400/30 bg-amber-300/10 px-2.5 py-1 text-amber-200/90">주의</span>
             </div>
             {loading && candles.length === 0 ? (
               <div className="relative flex h-full items-center justify-center text-zinc-500">Loading chart...</div>
@@ -616,7 +645,7 @@ export default function BitcoinEntryChart() {
                       stroke="#1a2330"
                       strokeWidth="1"
                     />
-                    <text x={chart.width - 66} y={level.y + 4} fill="#64748b" fontSize="12">
+                    <text x={chart.width - chart.padding.right + 8} y={level.y + 4} fill="#64748b" fontSize="12">
                       {formatPrice(level.price)}
                     </text>
                   </g>
@@ -775,40 +804,40 @@ export default function BitcoinEntryChart() {
             )}
           </div>
 
-          <div className="grid gap-4 border-x border-b border-[#1d2a38] bg-[#0b1119] p-4 lg:grid-cols-[210px_1fr_250px] lg:items-center">
-            <div className="border-l-2 border-cyan-300 pl-4">
-              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Last price</p>
-              <p className="mt-1 text-3xl font-semibold tracking-tight text-zinc-50">{currentPrice ? formatPrice(currentPrice) : "-"}</p>
-              <p className={`mt-1 text-xs font-semibold ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}% 현재 진행 봉</p>
+          <div className="grid gap-4 rounded-2xl border border-[#1a2432] bg-[#0b0f17] p-5 lg:grid-cols-[210px_1fr_250px] lg:items-center">
+            <div className="border-l-2 border-cyan-300/70 pl-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Last price</p>
+              <p className="mt-1 text-2xl font-semibold tracking-tight tabular-nums text-zinc-50">{currentPrice ? formatPrice(currentPrice) : "-"}</p>
+              <p className={`mt-1 text-xs font-medium tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}% 현재 진행 봉</p>
             </div>
 
-            <div className="min-w-0 border-y border-[#202d3b] py-3 lg:border-y-0 lg:border-x lg:px-5 lg:py-0">
-              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Selected signal</p>
+            <div className="min-w-0 border-y border-[#1c2733] py-3 lg:border-y-0 lg:border-x lg:px-5 lg:py-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Selected signal</p>
               <p
-                className={`mt-1 text-xl font-semibold ${signalTone}`}
+                className={`mt-1 text-lg font-semibold ${signalTone}`}
               >
                 {selectedSignal ? `${selectedSignalNumber}. ${signalTitle(selectedSignal)} ${Math.round(selectedSignal.score)}점` : "관망"}
               </p>
-              <p className="mt-1 text-sm leading-6 text-zinc-400">
+              <p className="mt-1 text-sm leading-6 text-zinc-500">
                 {selectedSignal?.detail ?? "거래량, 지지선, 쌍바닥, 다이버전스 조건이 아직 뚜렷하지 않습니다."}
               </p>
             </div>
 
             <div className="grid grid-cols-2 gap-4 text-right">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Volume</p>
-                <p className={`mt-1 text-lg font-semibold ${volumeRatio >= 1.5 ? "text-amber-300" : "text-zinc-200"}`}>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Volume</p>
+                <p className={`mt-1 text-lg font-semibold tabular-nums ${volumeRatio >= 1.5 ? "text-amber-300" : "text-zinc-200"}`}>
                   {volumeRatio ? `${volumeRatio.toFixed(2)}x` : "-"}
                 </p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">Mode</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Mode</p>
                 <p className={`mt-1 text-lg font-semibold ${signalTone}`}>{selectedSignal?.direction ?? "WAIT"}</p>
               </div>
             </div>
           </div>
 
-          <div className="border-x border-b border-[#1d2a38] bg-[#080d13] px-4 py-5">
+          <div className="rounded-2xl border border-[#1a2432] bg-[#080b11] px-4 py-5">
             <div className="mx-auto w-full max-w-[300px]">
               <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
             </div>

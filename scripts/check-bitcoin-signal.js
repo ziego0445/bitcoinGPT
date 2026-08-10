@@ -1,4 +1,9 @@
+// Runs on a GitHub Actions schedule (see .github/workflows/telegram-alert.yml).
+// Mirrors the signal logic in app/components/BitcoinEntryChart.tsx — keep both in sync
+// when tuning thresholds; see that file's detectSignals() for the annotated rationale.
+
 const CANDLE_LIMIT = 120;
+const ALERT_MIN_SCORE = 85;
 
 function toCandle(item) {
   return {
@@ -34,7 +39,11 @@ function lowerWickRatio(candle) {
 
 function momentumAt(candles, index) {
   const lookback = Math.max(0, index - 5);
-  return candles[index].close - candles[lookback].close;
+  const base = candles[lookback].close;
+  if (!base) return 0;
+  // Normalized to a % move so momentum at two different price/volatility regimes
+  // (e.g. two separate pivot lows) is comparable — a raw dollar diff isn't.
+  return (candles[index].close - base) / base;
 }
 
 function getPivotLows(candles, endIndex = candles.length - 1) {
@@ -113,7 +122,7 @@ function signalReasons(pattern, volumeSpike) {
 function detectLatestClosedSignal(candles) {
   if (candles.length < 25) return null;
 
-  // Binance returns the currently open candle last. Use the previous candle.
+  // Binance returns the currently open candle last. Use the previous (closed) candle.
   const index = candles.length - 2;
   const current = candles[index];
   const recent = candles.slice(index - 10, index);
@@ -125,32 +134,50 @@ function detectLatestClosedSignal(candles) {
   const bodyExpansion = avgBody > 0 ? bodySize(current) / avgBody : 0;
   const rangeExpansion = avgRange > 0 ? rangeSize(current) / avgRange : 0;
   const freshLow = current.low <= Math.min(...recent.map((candle) => candle.low));
-  const firstBody = bodySize(lastFour[0]);
   const lastBody = bodySize(current);
-  const fallingCloses = lastFour.every((candle, candleIndex) => {
-    if (candleIndex === 0) return true;
-    return candle.close <= lastFour[candleIndex - 1].close;
-  });
-  const firstCandleDominates = firstBody > avgBody * 1.7 && firstBody > lastBody * 1.25;
-  const highSellVolumeIntoRetest = lastFour.every((candle) => candle.close < candle.open && candle.volume > avgVolume * 1.15);
+  const firstCandle = lastFour[0];
+  const firstBody = bodySize(firstCandle);
+
+  // Chapter 2 (첫봉이 가장 길 때) shows *stepped* declines with intermittent bounces,
+  // not an unbroken run of lower closes.
+  const steppedDecline =
+    current.close < firstCandle.close &&
+    lastFour.slice(1).every((candle) => candle.close <= firstCandle.open);
+  // "First candle dominates" requires volume dominance too, not just a big body.
+  const firstVolumeDominates =
+    firstCandle.volume > avgVolume * 1.3 &&
+    firstCandle.volume >= Math.max(...lastFour.slice(1).map((candle) => candle.volume));
+  const firstCandleDominates = firstBody > avgBody * 1.7 && firstBody > lastBody * 1.25 && firstVolumeDominates;
+
   const supports = getSupportLevels(candles.slice(0, index + 1));
   const supportNearby = isNearSupport(current.low, supports);
   const pivots = getPivotLows(candles, index - 1);
   const previousPivot = pivots.at(-1);
   const wickOk = lowerWickRatio(current) >= 0.34;
   const sellingSlows = current.volume < avgVolume * 0.95 && bodySize(current) < avgBody * 0.9 && rangeSize(current) < avgRange * 0.95;
+  const bodyExtreme = bodyExpansion >= 1.1 || bodyExpansion <= 0.4;
 
   let nearPreviousLow = false;
   let slightlyBrokenDoubleBottom = false;
   let bullishDivergence = false;
   let retestVolumeOk = false;
+  let inRetestZone = false;
 
   if (previousPivot) {
     nearPreviousLow = Math.abs(current.low - previousPivot.price) / previousPivot.price <= 0.007;
     slightlyBrokenDoubleBottom = current.low < previousPivot.price && (previousPivot.price - current.low) / previousPivot.price <= 0.012;
     bullishDivergence = current.low <= previousPivot.price * 1.004 && momentumAt(candles, index) > previousPivot.momentum;
-    retestVolumeOk = current.volume <= previousPivot.volume * 1.15 || volumeSpike <= 1.35;
+    // Both volume frames (vs. the original pivot candle, and vs. the recent baseline)
+    // must agree the retest isn't overloaded with sell volume.
+    retestVolumeOk = current.volume <= previousPivot.volume * 1.15 && volumeSpike <= 1.6;
+    inRetestZone = Math.abs(current.low - previousPivot.price) / previousPivot.price <= 0.02;
   }
+
+  // Only a genuine retest of a prior pivot qualifies for the "heavy sell volume grinding
+  // into the retest" warning — applying it to any 4 red candles would also catch first-time
+  // capitulation flushes, which is the Chapter 1 "best entry" pattern, not one to avoid.
+  const highSellVolumeIntoRetest =
+    inRetestZone && lastFour.every((candle) => candle.close < candle.open && candle.volume > avgVolume * 1.15);
 
   function makeSignal(pattern, direction, score, detail) {
     return {
@@ -163,16 +190,26 @@ function detectLatestClosedSignal(candles) {
     };
   }
 
-  if ((firstCandleDominates && fallingCloses) || highSellVolumeIntoRetest) {
+  if ((firstCandleDominates && steppedDecline) || highSellVolumeIntoRetest) {
     return makeSignal("avoid", "WAIT", 35, "첫 장대봉이 지배적이거나 저점 재방문까지 매도 거래량이 과합니다.");
   }
 
-  if (freshLow && volumeSpike >= 2.0 && rangeExpansion >= 1.45 && bodyExpansion >= 1.1 && (wickOk || supportNearby)) {
-    return makeSignal("panic", "LONG", 70 + volumeSpike * 5 + rangeExpansion * 4 + bodyExpansion * 3 + (supportNearby ? 6 : 0), "마지막 장대봉, 거래량 폭발, 지지/꼬리 조건이 겹친 패닉셀 반등 후보입니다.");
+  if (freshLow && volumeSpike >= 2.0 && rangeExpansion >= 1.45 && bodyExtreme && (wickOk || supportNearby)) {
+    return makeSignal(
+      "panic",
+      "LONG",
+      70 + volumeSpike * 5 + rangeExpansion * 4 + Math.abs(bodyExpansion - 1) * 3 + (supportNearby ? 6 : 0),
+      "마지막 장대봉, 거래량 폭발, 지지/꼬리 조건이 겹친 패닉셀 반등 후보입니다.",
+    );
   }
 
   if ((nearPreviousLow || slightlyBrokenDoubleBottom) && retestVolumeOk && (wickOk || bullishDivergence)) {
-    return makeSignal("double-bottom", "LONG", 66 + (bullishDivergence ? 10 : 0) + (wickOk ? 6 : 0) + (supportNearby ? 5 : 0), "직전 저점 부근 재방문. 거래량이 과하지 않고 꼬리/다이버전스가 붙은 쌍바닥 후보입니다.");
+    return makeSignal(
+      "double-bottom",
+      "LONG",
+      66 + (bullishDivergence ? 10 : 0) + (wickOk ? 6 : 0) + (supportNearby ? 5 : 0),
+      "직전 저점 부근 재방문. 거래량이 과하지 않고 꼬리/다이버전스가 붙은 쌍바닥 후보입니다.",
+    );
   }
 
   if (freshLow && bullishDivergence && supportNearby) {
@@ -212,7 +249,7 @@ async function sendTelegram(text) {
   const chatId = process.env.TELEGRAM_CHAT_ID;
 
   if (!token || !chatId) {
-    throw new Error("Telegram environment variables are missing");
+    throw new Error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID environment variables are missing");
   }
 
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -230,7 +267,7 @@ async function sendTelegram(text) {
   }
 }
 
-exports.handler = async function handler() {
+async function main() {
   const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=${CANDLE_LIMIT}`);
   if (!response.ok) {
     throw new Error(`Binance request failed: ${response.status}`);
@@ -239,17 +276,16 @@ exports.handler = async function handler() {
   const candles = (await response.json()).map(toCandle);
   const signal = detectLatestClosedSignal(candles);
 
-  if (!signal || (signal.direction === "LONG" && signal.score < 70)) {
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ ok: true, sent: false }),
-    };
+  if (!signal || signal.score < ALERT_MIN_SCORE) {
+    console.log(`No alert (score=${signal?.score ?? "n/a"}, threshold=${ALERT_MIN_SCORE}).`);
+    return;
   }
 
   await sendTelegram(buildMessage(signal));
+  console.log(`Alert sent: ${signal.pattern} (${signal.score}점)`);
+}
 
-  return {
-    statusCode: 200,
-    body: JSON.stringify({ ok: true, sent: true, pattern: signal.pattern }),
-  };
-};
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
