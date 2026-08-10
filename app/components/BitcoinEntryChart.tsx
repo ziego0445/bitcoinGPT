@@ -757,12 +757,6 @@ export default function BitcoinEntryChart() {
           </div>
         </section>
 
-        <section className="border-b border-[#1a2432] bg-[#080b11] px-5 py-4">
-          <div className="mx-auto w-full max-w-[640px]">
-            <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
-          </div>
-        </section>
-
         <section className="flex flex-col gap-4 bg-[#080b11] px-5 py-5 lg:px-7">
           <div className="relative aspect-[1200/461] max-h-[520px] min-h-[240px] w-full overflow-hidden rounded-2xl border border-[#1a2432] bg-[#0a0e15] shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
             <div className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] [background-size:40px_40px]" />
@@ -1097,11 +1091,6 @@ export default function BitcoinEntryChart() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-[#1a2432] bg-[#080b11] px-4 py-5">
-            <div className="mx-auto w-full max-w-[300px]">
-              <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
-            </div>
-          </div>
         </section>
 
         <section className="border-t border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
@@ -1169,6 +1158,15 @@ export default function BitcoinEntryChart() {
               </table>
             </div>
           )}
+        </section>
+
+        <section className="border-t border-[#1a2432] bg-[#080b11] px-5 py-5">
+          <div className="mx-auto w-full max-w-[640px]">
+            <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
+          </div>
+          <div className="mx-auto mt-4 w-full max-w-[300px]">
+            <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
+          </div>
         </section>
       </div>
     </main>
