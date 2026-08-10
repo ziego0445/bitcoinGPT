@@ -5,6 +5,9 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   check-signal:
     runs-on: ubuntu-latest
@@ -18,8 +21,24 @@ jobs:
         with:
           node-version: 22
 
-      - name: Check signal and notify
+      - name: Send Telegram alert on high-score signals
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node scripts/check-bitcoin-signal.js
+
+      - name: Update paper-trading simulation
+        run: node scripts/paper-trade.js
+
+      - name: Commit paper-trade state if it changed
+        run: |
+          if git diff --quiet -- data/paper-trades.json; then
+            echo "No paper-trade state change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/paper-trades.json
+          git commit -m "Update paper-trade state [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
