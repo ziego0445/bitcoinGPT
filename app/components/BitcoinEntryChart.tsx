@@ -39,6 +39,7 @@ interface SupportLevel {
 interface PaperOpenPosition {
   pattern: Pattern
   score: number
+  leverage: number
   entryTime: number
   entryPrice: number
   takeProfit: number
@@ -48,6 +49,7 @@ interface PaperOpenPosition {
 interface PaperTrade {
   pattern: Pattern
   score: number
+  leverage: number
   entryTime: number
   entryPrice: number
   exitTime: number
@@ -558,7 +560,9 @@ export default function BitcoinEntryChart() {
 
   const paperOpenUnrealizedPct =
     paperState?.openPosition && currentPrice
-      ? ((currentPrice - paperState.openPosition.entryPrice) / paperState.openPosition.entryPrice) * 100
+      ? ((currentPrice - paperState.openPosition.entryPrice) / paperState.openPosition.entryPrice) *
+        paperState.openPosition.leverage *
+        100
       : null
   const paperTotalReturnPct = paperState
     ? ((paperState.currentBalance - paperState.startingBalance) / paperState.startingBalance) * 100
@@ -918,7 +922,7 @@ export default function BitcoinEntryChart() {
             <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Paper trading · 85점 이상 신호 자동 시뮬레이션
+                  Paper trading · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%
                 </p>
                 <h2 className="mt-1 text-base font-semibold text-zinc-50">가상매매 현황</h2>
               </div>
@@ -960,6 +964,9 @@ export default function BitcoinEntryChart() {
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-300/30 bg-cyan-300/5 px-4 py-3">
                     <div className="flex items-center gap-3">
                       <span className="rounded-md bg-cyan-300/90 px-2 py-1 text-[10px] font-bold text-[#061014]">보유중</span>
+                      <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">
+                        {paperState.openPosition.leverage}x
+                      </span>
                       <span className="text-sm text-zinc-200">
                         {patternLabel(paperState.openPosition.pattern)} · 진입 {formatPrice(paperState.openPosition.entryPrice)} (
                         {formatDateTime(paperState.openPosition.entryTime)})

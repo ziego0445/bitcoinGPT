@@ -1,7 +1,8 @@
 // Runs on the same GitHub Actions schedule as the Telegram alert (see
 // .github/workflows/telegram-alert.yml). Simulates a single-position paper-trading
 // account: whenever a LONG signal scores >= ALERT_MIN_SCORE and no position is open,
-// "buy" with the full current balance; exit at a fixed take-profit or stop-loss.
+// "buy" with the full current balance at LEVERAGE×; exit at a fixed take-profit or
+// stop-loss (both expressed as account-equity %, not raw price %).
 // Only committed to data/paper-trades.json when a position actually opens or closes,
 // so idle runs don't spam the repo with commits (which would also redeploy GitHub Pages).
 
@@ -11,8 +12,9 @@ const { toCandle, detectSignals } = require("./lib/signals");
 
 const CANDLE_LIMIT = 200;
 const ALERT_MIN_SCORE = 85;
-const TAKE_PROFIT_PCT = 0.015; // +1.5%
-const STOP_LOSS_PCT = 0.008; // -0.8%
+const LEVERAGE = 10;
+const TAKE_PROFIT_PCT = 0.08; // +8% on account equity (= +0.8% price move at 10x)
+const STOP_LOSS_PCT = 0.08; // -8% on account equity (= -0.8% price move at 10x)
 const STARTING_BALANCE = 10_000;
 const STATE_PATH = path.join(__dirname, "..", "data", "paper-trades.json");
 
@@ -71,19 +73,22 @@ function simulate(closedCandles, events, state) {
       if (hitStop || hitTarget) {
         const exitReason = hitStop ? "stop-loss" : "take-profit";
         const exitPrice = hitStop ? position.stopLoss : position.takeProfit;
-        const pnlPct = (exitPrice - position.entryPrice) / position.entryPrice;
+        const priceMovePct = (exitPrice - position.entryPrice) / position.entryPrice;
+        const leverage = position.leverage ?? LEVERAGE;
+        const accountPnlPct = priceMovePct * leverage;
         const balanceBefore = state.currentBalance;
-        const balanceAfter = balanceBefore * (1 + pnlPct);
+        const balanceAfter = balanceBefore * (1 + accountPnlPct);
 
         state.trades.push({
           pattern: position.pattern,
           score: position.score,
+          leverage,
           entryTime: position.entryTime,
           entryPrice: position.entryPrice,
           exitTime: candle.time,
           exitPrice,
           exitReason,
-          pnlPct: pnlPct * 100,
+          pnlPct: accountPnlPct * 100,
           balanceBefore,
           balanceAfter,
         });
@@ -95,13 +100,19 @@ function simulate(closedCandles, events, state) {
     if (!state.openPosition) {
       const event = eventByIndex.get(index);
       if (event && event.direction === "LONG" && event.score >= ALERT_MIN_SCORE) {
+        // TP/SL are account-equity targets; at N× leverage the underlying price only
+        // needs to move 1/N as far to hit them.
+        const priceMoveForTakeProfit = TAKE_PROFIT_PCT / LEVERAGE;
+        const priceMoveForStopLoss = STOP_LOSS_PCT / LEVERAGE;
+
         state.openPosition = {
           pattern: event.pattern,
           score: event.score,
+          leverage: LEVERAGE,
           entryTime: candle.time,
           entryPrice: candle.close,
-          takeProfit: candle.close * (1 + TAKE_PROFIT_PCT),
-          stopLoss: candle.close * (1 - STOP_LOSS_PCT),
+          takeProfit: candle.close * (1 + priceMoveForTakeProfit),
+          stopLoss: candle.close * (1 - priceMoveForStopLoss),
         };
       }
     }
