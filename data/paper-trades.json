@@ -1,7 +1,7 @@
 {
-  "startingBalance": 10000,
-  "currentBalance": 10000,
-  "startedAt": 1786373718428,
+  "startingBalance": 100,
+  "currentBalance": 100,
+  "startedAt": 1786375188722,
   "openPosition": null,
   "trades": []
 }

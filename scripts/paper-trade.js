@@ -15,7 +15,7 @@ const ALERT_MIN_SCORE = 85;
 const LEVERAGE = 10;
 const TAKE_PROFIT_PCT = 0.08; // +8% on account equity (= +0.8% price move at 10x)
 const STOP_LOSS_PCT = 0.08; // -8% on account equity (= -0.8% price move at 10x)
-const STARTING_BALANCE = 10_000;
+const STARTING_BALANCE = 100;
 const STATE_PATH = path.join(__dirname, "..", "data", "paper-trades.json");
 
 function loadState() {
@@ -109,6 +109,7 @@ function simulate(closedCandles, events, state) {
           pattern: event.pattern,
           score: event.score,
           leverage: LEVERAGE,
+          size: state.currentBalance, // capital committed as margin for this trade
           entryTime: candle.time,
           entryPrice: candle.close,
           takeProfit: candle.close * (1 + priceMoveForTakeProfit),

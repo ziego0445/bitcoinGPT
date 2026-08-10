@@ -40,6 +40,7 @@ interface PaperOpenPosition {
   pattern: Pattern
   score: number
   leverage: number
+  size: number
   entryTime: number
   entryPrice: number
   takeProfit: number
@@ -622,6 +623,78 @@ export default function BitcoinEntryChart() {
           </div>
         </header>
 
+        <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                Paper trading · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%
+              </p>
+              <h2 className="mt-1 text-base font-semibold text-zinc-50">가상매매 현황</h2>
+            </div>
+            {paperState && (
+              <div className="flex items-end gap-6 text-right">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">시작 금액</p>
+                  <p className="mt-1 text-base font-semibold tabular-nums text-zinc-400">
+                    {formatPrice(paperState.startingBalance)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">현재 금액</p>
+                  <p
+                    className={`mt-1 text-xl font-bold tabular-nums ${
+                      paperTotalReturnPct >= 0 ? "text-emerald-300" : "text-rose-300"
+                    }`}
+                  >
+                    {formatPrice(paperState.currentBalance)}
+                  </p>
+                  <p
+                    className={`text-xs font-medium tabular-nums ${
+                      paperTotalReturnPct >= 0 ? "text-emerald-300" : "text-rose-300"
+                    }`}
+                  >
+                    {paperTotalReturnPct >= 0 ? "+" : ""}
+                    {paperTotalReturnPct.toFixed(2)}%
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {!paperState ? (
+            <p className="text-sm text-zinc-500">가상매매 기록을 불러오는 중입니다...</p>
+          ) : paperState.openPosition ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-300/30 bg-cyan-300/5 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="rounded-md bg-cyan-300/90 px-2 py-1 text-[10px] font-bold text-[#061014]">보유중</span>
+                <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">
+                  {paperState.openPosition.leverage}x
+                </span>
+                <span className="text-sm text-zinc-200">
+                  {patternLabel(paperState.openPosition.pattern)} · 투입 {formatPrice(paperState.openPosition.size)} · 진입{" "}
+                  {formatPrice(paperState.openPosition.entryPrice)} ({formatDateTime(paperState.openPosition.entryTime)})
+                </span>
+                <span className="text-xs text-zinc-500">
+                  익절가 {formatPrice(paperState.openPosition.takeProfit)} · 손절가 {formatPrice(paperState.openPosition.stopLoss)}
+                </span>
+              </div>
+              <span
+                className={`text-sm font-semibold tabular-nums ${
+                  (paperOpenUnrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"
+                }`}
+              >
+                {paperOpenUnrealizedPct !== null
+                  ? `${paperOpenUnrealizedPct >= 0 ? "+" : ""}${paperOpenUnrealizedPct.toFixed(2)}% 평가손익`
+                  : "-"}
+              </span>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">
+              현재 보유중인 가상 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.
+            </div>
+          )}
+        </section>
+
         <section className="border-b border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
           <div className="mb-4 flex items-end justify-between gap-4">
             <div>
@@ -918,136 +991,78 @@ export default function BitcoinEntryChart() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-[#1a2432] bg-[#0b0f17] p-5">
-            <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Paper trading · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%
-                </p>
-                <h2 className="mt-1 text-base font-semibold text-zinc-50">가상매매 현황</h2>
-              </div>
-              {paperState && (
-                <div className="flex items-end gap-6 text-right">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">시작 금액</p>
-                    <p className="mt-1 text-base font-semibold tabular-nums text-zinc-400">
-                      {formatPrice(paperState.startingBalance)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">현재 금액</p>
-                    <p
-                      className={`mt-1 text-xl font-bold tabular-nums ${
-                        paperTotalReturnPct >= 0 ? "text-emerald-300" : "text-rose-300"
-                      }`}
-                    >
-                      {formatPrice(paperState.currentBalance)}
-                    </p>
-                    <p
-                      className={`text-xs font-medium tabular-nums ${
-                        paperTotalReturnPct >= 0 ? "text-emerald-300" : "text-rose-300"
-                      }`}
-                    >
-                      {paperTotalReturnPct >= 0 ? "+" : ""}
-                      {paperTotalReturnPct.toFixed(2)}%
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {!paperState ? (
-              <p className="text-sm text-zinc-500">가상매매 기록을 불러오는 중입니다...</p>
-            ) : (
-              <>
-                {paperState.openPosition && (
-                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-300/30 bg-cyan-300/5 px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <span className="rounded-md bg-cyan-300/90 px-2 py-1 text-[10px] font-bold text-[#061014]">보유중</span>
-                      <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">
-                        {paperState.openPosition.leverage}x
-                      </span>
-                      <span className="text-sm text-zinc-200">
-                        {patternLabel(paperState.openPosition.pattern)} · 진입 {formatPrice(paperState.openPosition.entryPrice)} (
-                        {formatDateTime(paperState.openPosition.entryTime)})
-                      </span>
-                    </div>
-                    <span
-                      className={`text-sm font-semibold tabular-nums ${
-                        (paperOpenUnrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"
-                      }`}
-                    >
-                      {paperOpenUnrealizedPct !== null
-                        ? `${paperOpenUnrealizedPct >= 0 ? "+" : ""}${paperOpenUnrealizedPct.toFixed(2)}% 평가손익`
-                        : "-"}
-                    </span>
-                  </div>
-                )}
-
-                {paperRecentTrades.length === 0 && !paperState.openPosition ? (
-                  <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
-                    아직 체결된 가상매매 기록이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.
-                  </div>
-                ) : (
-                  paperRecentTrades.length > 0 && (
-                    <div className="overflow-x-auto">
-                      <table className="w-full min-w-[560px] border-collapse text-sm">
-                        <thead>
-                          <tr className="border-b border-[#1c2733] text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
-                            <th className="py-2 pr-3">패턴</th>
-                            <th className="py-2 pr-3">진입</th>
-                            <th className="py-2 pr-3">청산</th>
-                            <th className="py-2 pr-3">결과</th>
-                            <th className="py-2 text-right">손익</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {paperRecentTrades.map((trade) => (
-                            <tr key={`${trade.entryTime}-${trade.exitTime}`} className="border-b border-[#161f29] last:border-0">
-                              <td className="py-2.5 pr-3 text-zinc-300">{patternLabel(trade.pattern)}</td>
-                              <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
-                                {formatPrice(trade.entryPrice)}
-                                <span className="ml-1 text-zinc-600">{formatDateTime(trade.entryTime)}</span>
-                              </td>
-                              <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
-                                {formatPrice(trade.exitPrice)}
-                                <span className="ml-1 text-zinc-600">{formatDateTime(trade.exitTime)}</span>
-                              </td>
-                              <td className="py-2.5 pr-3">
-                                <span
-                                  className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
-                                    trade.exitReason === "take-profit"
-                                      ? "bg-emerald-300/15 text-emerald-300"
-                                      : "bg-rose-300/15 text-rose-300"
-                                  }`}
-                                >
-                                  {trade.exitReason === "take-profit" ? "익절" : "손절"}
-                                </span>
-                              </td>
-                              <td
-                                className={`py-2.5 text-right font-semibold tabular-nums ${
-                                  trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300"
-                                }`}
-                              >
-                                {trade.pnlPct >= 0 ? "+" : ""}
-                                {trade.pnlPct.toFixed(2)}%
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )
-                )}
-              </>
-            )}
-          </div>
-
           <div className="rounded-2xl border border-[#1a2432] bg-[#080b11] px-4 py-5">
             <div className="mx-auto w-full max-w-[300px]">
               <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
             </div>
           </div>
+        </section>
+
+        <section className="border-t border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
+          <div className="mb-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Paper trading history</p>
+            <h2 className="mt-1 text-base font-semibold text-zinc-50">매매 결과</h2>
+          </div>
+
+          {!paperState || (paperRecentTrades.length === 0 && !paperState.openPosition) ? (
+            <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
+              아직 체결된 가상매매 기록이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.
+            </div>
+          ) : paperRecentTrades.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
+              아직 청산된 거래가 없습니다. 위 &ldquo;가상매매 현황&rdquo;에서 보유중인 포지션을 확인하세요.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px] border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-[#1c2733] text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+                    <th className="py-2 pr-3">패턴</th>
+                    <th className="py-2 pr-3">레버리지</th>
+                    <th className="py-2 pr-3">진입</th>
+                    <th className="py-2 pr-3">청산</th>
+                    <th className="py-2 pr-3">결과</th>
+                    <th className="py-2 text-right">손익</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paperRecentTrades.map((trade) => (
+                    <tr key={`${trade.entryTime}-${trade.exitTime}`} className="border-b border-[#161f29] last:border-0">
+                      <td className="py-2.5 pr-3 text-zinc-300">{patternLabel(trade.pattern)}</td>
+                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">{trade.leverage}x</td>
+                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
+                        {formatPrice(trade.entryPrice)}
+                        <span className="ml-1 text-zinc-600">{formatDateTime(trade.entryTime)}</span>
+                      </td>
+                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
+                        {formatPrice(trade.exitPrice)}
+                        <span className="ml-1 text-zinc-600">{formatDateTime(trade.exitTime)}</span>
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <span
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                            trade.exitReason === "take-profit"
+                              ? "bg-emerald-300/15 text-emerald-300"
+                              : "bg-rose-300/15 text-rose-300"
+                          }`}
+                        >
+                          {trade.exitReason === "take-profit" ? "익절" : "손절"}
+                        </span>
+                      </td>
+                      <td
+                        className={`py-2.5 text-right font-semibold tabular-nums ${
+                          trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300"
+                        }`}
+                      >
+                        {trade.pnlPct >= 0 ? "+" : ""}
+                        {trade.pnlPct.toFixed(2)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       </div>
     </main>
