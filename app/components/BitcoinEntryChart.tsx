@@ -592,14 +592,11 @@ export default function BitcoinEntryChart() {
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-300/60">BTCUSDT · Binance</p>
               <h1 className="mt-0.5 text-lg font-semibold text-zinc-50">Bitcoin Entry Radar</h1>
             </div>
-            <div className="border-l border-[#232f3d] pl-4">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">BTC/USDT 현재가</p>
-              <div className="mt-0.5 flex items-baseline gap-2">
-                <p className="text-lg font-bold tabular-nums text-zinc-50">{currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}</p>
-                <p className={`text-xs font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                  {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
-                </p>
-              </div>
+            <div className="hidden border-l border-[#232f3d] pl-4 sm:block">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">Live move</p>
+              <p className={`mt-0.5 text-sm font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -632,7 +629,15 @@ export default function BitcoinEntryChart() {
               <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
                 Paper trading · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%
               </p>
-              <h2 className="mt-1 text-base font-semibold text-zinc-50">가상매매 현황</h2>
+              <div className="mt-1 flex items-baseline gap-2">
+                <h2 className="text-base font-semibold text-zinc-50">가상매매 현황</h2>
+                <span className="text-sm font-bold tabular-nums text-cyan-200">
+                  {currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}
+                </span>
+                <span className={`text-xs font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                  {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
+                </span>
+              </div>
             </div>
             {paperState && (
               <div className="flex items-end gap-6 text-right">
