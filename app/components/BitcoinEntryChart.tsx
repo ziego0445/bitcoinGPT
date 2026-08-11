@@ -695,68 +695,6 @@ export default function BitcoinEntryChart() {
           )}
         </section>
 
-        <section className="border-b border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
-          <div className="mb-4 flex items-end justify-between gap-4">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Signal timeline</p>
-              <h2 className="mt-1 text-base font-semibold text-zinc-50">최근 확정 신호</h2>
-            </div>
-            <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
-          </div>
-
-          <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
-            {displaySignals.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500 xl:col-span-5">
-                최근 확정 봉에서 기준을 만족하는 진입 참고 신호가 없습니다.
-              </div>
-            ) : (
-              [...displaySignals].reverse().map((signal) => {
-                const candle = candles[signal.index]
-                const selected = selectedSignal ? signalKey(signal) === signalKey(selectedSignal) : false
-                const eventNumber = displaySignals.findIndex((item) => signalKey(item) === signalKey(signal)) + 1
-                const accent = signal.direction === "LONG" ? "cyan" : "amber"
-
-                return (
-                  <button
-                    key={signalKey(signal)}
-                    type="button"
-                    onClick={() => setSelectedSignalKey(signalKey(signal))}
-                    className={`group relative min-h-[142px] overflow-hidden rounded-xl border p-4 text-left transition ${
-                      selected
-                        ? accent === "cyan"
-                          ? "border-cyan-300/60 bg-[#0d1a22] shadow-[inset_2px_0_0_#67e8f9,0_10px_26px_rgba(103,232,249,0.06)]"
-                          : "border-amber-300/60 bg-[#191509] shadow-[inset_2px_0_0_#fbbf24,0_10px_26px_rgba(251,191,36,0.05)]"
-                        : "border-[#1c2734] bg-[#0b0f16] hover:border-[#33465a] hover:bg-[#0f141c]"
-                    }`}
-                  >
-                    <div className="mb-3.5 flex items-center justify-between">
-                      <span
-                        className={`grid h-6 w-6 place-items-center rounded-md text-[11px] font-bold ${
-                          signal.direction === "LONG" ? "bg-cyan-300/90 text-[#061014]" : "bg-amber-300/90 text-[#1a1202]"
-                        }`}
-                      >
-                        {eventNumber}
-                      </span>
-                      <span className="text-xs tabular-nums text-zinc-500">{candle ? formatCardTime(candle.time) : "--:--"}</span>
-                    </div>
-                    <p className={`text-[10px] font-semibold uppercase tracking-[0.1em] ${signal.direction === "LONG" ? "text-cyan-200/90" : "text-amber-200/90"}`}>
-                      {signalTitle(signal)}
-                    </p>
-                    <p className="mt-1 text-lg font-semibold tracking-tight tabular-nums text-zinc-50">{candle ? formatPrice(candle.close) : "-"}</p>
-                    <p className="mt-2 line-clamp-1 text-xs leading-5 text-zinc-500">{shortReason(signal)}</p>
-                    <div className="mt-3.5 h-1 rounded-full bg-[#161f29]">
-                      <div
-                        className={`h-full rounded-full ${signal.direction === "LONG" ? "bg-cyan-300/80" : "bg-amber-300/80"}`}
-                        style={{ width: `${signal.score}%` }}
-                      />
-                    </div>
-                  </button>
-                )
-              })
-            )}
-          </div>
-        </section>
-
         <section className="flex flex-col gap-4 bg-[#080b11] px-5 py-5 lg:px-7">
           <div className="relative aspect-[1200/461] max-h-[520px] min-h-[240px] w-full overflow-hidden rounded-2xl border border-[#1a2432] bg-[#0a0e15] shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
             <div className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] [background-size:40px_40px]" />
@@ -769,6 +707,21 @@ export default function BitcoinEntryChart() {
               <span className="rounded-full border border-emerald-400/30 bg-emerald-300/10 px-2.5 py-1 text-emerald-200/90">S 익절</span>
               <span className="rounded-full border border-rose-400/30 bg-rose-300/10 px-2.5 py-1 text-rose-200/90">S 손절</span>
             </div>
+            {paperState?.openPosition && (
+              <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2">
+                <div className="flex items-center gap-2 whitespace-nowrap rounded-full border border-cyan-300/40 bg-[#0a1017]/95 px-3.5 py-1.5 text-xs font-semibold shadow-[0_10px_24px_rgba(0,0,0,0.4)]">
+                  <span className="rounded-full bg-cyan-300/90 px-1.5 py-0.5 text-[10px] font-bold text-[#061014]">B</span>
+                  <span className="text-zinc-300">진입 {formatPrice(paperState.openPosition.entryPrice)}</span>
+                  <span className="text-zinc-600">·</span>
+                  <span className={`tabular-nums ${(paperOpenUnrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                    {paperOpenUnrealizedPct !== null
+                      ? `${paperOpenUnrealizedPct >= 0 ? "+" : ""}${paperOpenUnrealizedPct.toFixed(2)}%`
+                      : "-"}
+                  </span>
+                  <span className="text-zinc-500">({paperState.openPosition.leverage}x)</span>
+                </div>
+              </div>
+            )}
             {loading && candles.length === 0 ? (
               <div className="relative flex h-full items-center justify-center text-zinc-500">Loading chart...</div>
             ) : error ? (
@@ -1158,6 +1111,68 @@ export default function BitcoinEntryChart() {
               </table>
             </div>
           )}
+        </section>
+
+        <section className="border-t border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
+          <div className="mb-4 flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Signal timeline</p>
+              <h2 className="mt-1 text-base font-semibold text-zinc-50">최근 확정 신호</h2>
+            </div>
+            <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
+          </div>
+
+          <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
+            {displaySignals.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500 xl:col-span-5">
+                최근 확정 봉에서 기준을 만족하는 진입 참고 신호가 없습니다.
+              </div>
+            ) : (
+              [...displaySignals].reverse().map((signal) => {
+                const candle = candles[signal.index]
+                const selected = selectedSignal ? signalKey(signal) === signalKey(selectedSignal) : false
+                const eventNumber = displaySignals.findIndex((item) => signalKey(item) === signalKey(signal)) + 1
+                const accent = signal.direction === "LONG" ? "cyan" : "amber"
+
+                return (
+                  <button
+                    key={signalKey(signal)}
+                    type="button"
+                    onClick={() => setSelectedSignalKey(signalKey(signal))}
+                    className={`group relative min-h-[142px] overflow-hidden rounded-xl border p-4 text-left transition ${
+                      selected
+                        ? accent === "cyan"
+                          ? "border-cyan-300/60 bg-[#0d1a22] shadow-[inset_2px_0_0_#67e8f9,0_10px_26px_rgba(103,232,249,0.06)]"
+                          : "border-amber-300/60 bg-[#191509] shadow-[inset_2px_0_0_#fbbf24,0_10px_26px_rgba(251,191,36,0.05)]"
+                        : "border-[#1c2734] bg-[#0b0f16] hover:border-[#33465a] hover:bg-[#0f141c]"
+                    }`}
+                  >
+                    <div className="mb-3.5 flex items-center justify-between">
+                      <span
+                        className={`grid h-6 w-6 place-items-center rounded-md text-[11px] font-bold ${
+                          signal.direction === "LONG" ? "bg-cyan-300/90 text-[#061014]" : "bg-amber-300/90 text-[#1a1202]"
+                        }`}
+                      >
+                        {eventNumber}
+                      </span>
+                      <span className="text-xs tabular-nums text-zinc-500">{candle ? formatCardTime(candle.time) : "--:--"}</span>
+                    </div>
+                    <p className={`text-[10px] font-semibold uppercase tracking-[0.1em] ${signal.direction === "LONG" ? "text-cyan-200/90" : "text-amber-200/90"}`}>
+                      {signalTitle(signal)}
+                    </p>
+                    <p className="mt-1 text-lg font-semibold tracking-tight tabular-nums text-zinc-50">{candle ? formatPrice(candle.close) : "-"}</p>
+                    <p className="mt-2 line-clamp-1 text-xs leading-5 text-zinc-500">{shortReason(signal)}</p>
+                    <div className="mt-3.5 h-1 rounded-full bg-[#161f29]">
+                      <div
+                        className={`h-full rounded-full ${signal.direction === "LONG" ? "bg-cyan-300/80" : "bg-amber-300/80"}`}
+                        style={{ width: `${signal.score}%` }}
+                      />
+                    </div>
+                  </button>
+                )
+              })
+            )}
+          </div>
         </section>
 
         <section className="border-t border-[#1a2432] bg-[#080b11] px-5 py-5">
