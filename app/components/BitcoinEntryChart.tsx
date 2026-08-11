@@ -964,6 +964,28 @@ export default function BitcoinEntryChart() {
                               </text>
                             </g>
                           )}
+                          {/* Entry price line spans the full chart, like the TP/SL lines above —
+                              the entry candle itself can fall outside the visible window (e.g. the
+                              position has been open longer than the current timeframe's window), so
+                              relying only on a point marker at openEntryIndex could make "we bought"
+                              invisible even though the position is very much still open. */}
+                          {openPosition.entryPrice >= chart.min && openPosition.entryPrice <= chart.max && (
+                            <g>
+                              <line
+                                x1={chart.padding.left}
+                                x2={chart.width - chart.padding.right}
+                                y1={yAt(openPosition.entryPrice)}
+                                y2={yAt(openPosition.entryPrice)}
+                                stroke="#67e8f9"
+                                strokeDasharray="2 6"
+                                strokeWidth="1.4"
+                                strokeOpacity="0.8"
+                              />
+                              <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.entryPrice) + 4} fill="#67e8f9" fontSize="11" fontWeight="800">
+                                B {formatPrice(openPosition.entryPrice)}
+                              </text>
+                            </g>
+                          )}
                           {openEntryIndex >= 0 && (
                             <g>
                               <circle cx={xAt(openEntryIndex)} cy={yAt(openPosition.entryPrice)} r="9" fill="#071017" stroke="#67e8f9" strokeWidth="2" />
@@ -1129,6 +1151,9 @@ export default function BitcoinEntryChart() {
             </div>
             <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
           </div>
+          <p className="mb-4 text-xs text-zinc-500">
+            이 카드들은 지금 선택한 {timeframe} 기준의 참고용 후보 신호입니다. 실제 가상매매 봇은 5분봉 기준으로 자동 진입하므로 진입 시점이 다를 수 있습니다 — 실제 진입가/손익은 차트의 점선 B 표시와 상단 배지를 확인하세요.
+          </p>
 
           <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
             {displaySignals.length === 0 ? (
