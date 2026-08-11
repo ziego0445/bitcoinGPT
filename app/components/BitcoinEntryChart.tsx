@@ -964,33 +964,54 @@ export default function BitcoinEntryChart() {
                               </text>
                             </g>
                           )}
-                          {/* Entry price line spans the full chart, like the TP/SL lines above —
-                              the entry candle itself can fall outside the visible window (e.g. the
-                              position has been open longer than the current timeframe's window), so
-                              relying only on a point marker at openEntryIndex could make "we bought"
-                              invisible even though the position is very much still open. */}
-                          {openPosition.entryPrice >= chart.min && openPosition.entryPrice <= chart.max && (
+                          {/* The B mark belongs at the actual entry candle (time position), not
+                              smeared across the full width at the price level — a vertical guide
+                              plus a bigger glowing marker makes that exact candle easy to spot even
+                              when it sits far from the currently selected signal. */}
+                          {openEntryIndex >= 0 && (
                             <g>
                               <line
-                                x1={chart.padding.left}
-                                x2={chart.width - chart.padding.right}
-                                y1={yAt(openPosition.entryPrice)}
-                                y2={yAt(openPosition.entryPrice)}
+                                x1={xAt(openEntryIndex)}
+                                x2={xAt(openEntryIndex)}
+                                y1={chart.padding.top}
+                                y2={chart.priceHeight + chart.gap + chart.volumeHeight}
                                 stroke="#67e8f9"
-                                strokeDasharray="2 6"
-                                strokeWidth="1.4"
-                                strokeOpacity="0.8"
+                                strokeDasharray="4 6"
+                                strokeOpacity="0.35"
+                                strokeWidth="1.2"
                               />
-                              <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.entryPrice) + 4} fill="#67e8f9" fontSize="11" fontWeight="800">
-                                B {formatPrice(openPosition.entryPrice)}
+                              <circle
+                                cx={xAt(openEntryIndex)}
+                                cy={yAt(openPosition.entryPrice)}
+                                r="10"
+                                fill="#071017"
+                                stroke="#67e8f9"
+                                strokeWidth="2.4"
+                                filter="url(#signalGlow)"
+                              />
+                              <text
+                                x={xAt(openEntryIndex)}
+                                y={yAt(openPosition.entryPrice) + 4}
+                                fill="#67e8f9"
+                                fontSize="11"
+                                fontWeight="800"
+                                textAnchor="middle"
+                              >
+                                B
                               </text>
                             </g>
                           )}
-                          {openEntryIndex >= 0 && (
+                          {/* Entry candle predates the current timeframe's visible window (e.g. a
+                              position held longer than 15m×121 candles) — pin the marker to the left
+                              edge instead of hiding it outright. */}
+                          {openEntryIndex < 0 && openPosition.entryPrice >= chart.min && openPosition.entryPrice <= chart.max && (
                             <g>
-                              <circle cx={xAt(openEntryIndex)} cy={yAt(openPosition.entryPrice)} r="9" fill="#071017" stroke="#67e8f9" strokeWidth="2" />
-                              <text x={xAt(openEntryIndex)} y={yAt(openPosition.entryPrice) + 4} fill="#67e8f9" fontSize="11" fontWeight="800" textAnchor="middle">
+                              <circle cx={chart.padding.left + 2} cy={yAt(openPosition.entryPrice)} r="8" fill="#071017" stroke="#67e8f9" strokeWidth="2" />
+                              <text x={chart.padding.left + 2} y={yAt(openPosition.entryPrice) + 4} fill="#67e8f9" fontSize="10" fontWeight="800" textAnchor="middle">
                                 B
+                              </text>
+                              <text x={chart.padding.left + 14} y={yAt(openPosition.entryPrice) - 8} fill="#67e8f9" fontSize="10" fontWeight="700">
+                                ← 화면 밖 진입
                               </text>
                             </g>
                           )}
