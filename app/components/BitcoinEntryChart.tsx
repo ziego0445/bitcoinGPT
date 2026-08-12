@@ -45,6 +45,7 @@ interface PaperOpenPosition {
   entryPrice: number
   takeProfit: number
   stopLoss: number
+  orderId?: string
 }
 
 interface PaperTrade {
@@ -59,9 +60,15 @@ interface PaperTrade {
   pnlPct: number
   balanceBefore: number
   balanceAfter: number
+  orderId?: string
+  exitOrderId?: string
 }
 
+// Shared by both the paper simulator (data/paper-trades.json) and the real Bitget bot
+// (data/live-trades.json, see scripts/live-trade.js) — `mode` distinguishes them when a
+// single render helper needs to know which one it's drawing.
 interface PaperTradeState {
+  mode?: "demo" | "live"
   startingBalance: number
   currentBalance: number
   openPosition: PaperOpenPosition | null
@@ -74,6 +81,15 @@ const MAX_EVENT_CARDS = 10
 const MAX_TRADE_ROWS = 12
 const PAPER_TRADE_STATE_URL =
   "https://raw.githubusercontent.com/ziego0445/bitcoinGPT/main/data/paper-trades.json"
+// Written by scripts/live-trade.js, which runs on a local always-on PC (not GitHub
+// Actions) and places real Bitget orders — see that file for details. The panel that
+// reads this simply doesn't render until the file exists (script has run at least once).
+const LIVE_TRADE_STATE_URL =
+  "https://raw.githubusercontent.com/ziego0445/bitcoinGPT/main/data/live-trades.json"
+const PAPER_MARKER_COLORS = { entry: "#67e8f9", win: "#34d399", loss: "#fb7185" }
+// Real-money trades get a visually distinct (amber/rose) marker palette so they're never
+// mistaken for the paper simulator on the same chart.
+const LIVE_MARKER_COLORS = { entry: "#fbbf24", win: "#4ade80", loss: "#f43f5e" }
 
 function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
   return (
@@ -411,37 +427,77 @@ function formatDateTime(time: number) {
   }).format(new Date(time))
 }
 
+// Polls a JSON file (paper-trades.json / live-trades.json, both fetched straight from
+// GitHub's raw content host) on an interval, keeping the last known value on transient
+// fetch failures — those files only change every few minutes at most, so a stale read is
+// preferable to a blank panel. Returns null before the first successful load, which also
+// covers the case where the file doesn't exist yet (e.g. live-trades.json before
+// scripts/live-trade.js has ever run) — callers use that to hide the panel entirely.
+function openUnrealizedPct(state: PaperTradeState | null, currentPrice: number | undefined) {
+  if (!state?.openPosition || !currentPrice) return null
+  return (
+    ((currentPrice - state.openPosition.entryPrice) / state.openPosition.entryPrice) *
+    state.openPosition.leverage *
+    100
+  )
+}
+
+function totalReturnPct(state: PaperTradeState | null) {
+  if (!state) return 0
+  return ((state.currentBalance - state.startingBalance) / state.startingBalance) * 100
+}
+
+interface TradePanelConfig {
+  title: string
+  subtitleLabel: string
+  accent: "cyan" | "amber"
+  badgeText: string
+  emptyText: string
+  loadingText: string
+}
+
+const ACCENT = {
+  cyan: { priceText: "text-cyan-200", openBorder: "border-cyan-300/30 bg-cyan-300/5", badgeBg: "bg-cyan-300/90" },
+  amber: { priceText: "text-amber-200", openBorder: "border-amber-300/30 bg-amber-300/5", badgeBg: "bg-amber-300/90" },
+} as const
+
+function usePolledJson<T>(url: string, intervalMs: number): T | null {
+  const [data, setData] = useState<T | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      try {
+        const response = await fetch(url, { cache: "no-store" })
+        if (!response.ok) throw new Error(`${url} ${response.status}`)
+        const next = (await response.json()) as T
+        if (!cancelled) setData(next)
+      } catch {
+        // see comment above — swallow and keep the last known value
+      }
+    }
+
+    load()
+    const interval = window.setInterval(load, intervalMs)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [url, intervalMs])
+
+  return data
+}
+
 export default function BitcoinEntryChart() {
   const [timeframe, setTimeframe] = useState<Timeframe>("15m")
   const [candles, setCandles] = useState<Candle[]>([])
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(true)
   const [selectedSignalKey, setSelectedSignalKey] = useState("")
-  const [paperState, setPaperState] = useState<PaperTradeState | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadPaperState() {
-      try {
-        const response = await fetch(PAPER_TRADE_STATE_URL, { cache: "no-store" })
-        if (!response.ok) throw new Error(`paper-trades ${response.status}`)
-        const data = (await response.json()) as PaperTradeState
-        if (!cancelled) setPaperState(data)
-      } catch {
-        // Keep the last known state on transient fetch failures — this file only
-        // changes every few minutes at most, so a stale read is preferable to a blank panel.
-      }
-    }
-
-    loadPaperState()
-    const interval = window.setInterval(loadPaperState, 60_000)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(interval)
-    }
-  }, [])
+  const paperState = usePolledJson<PaperTradeState>(PAPER_TRADE_STATE_URL, 60_000)
+  const liveState = usePolledJson<PaperTradeState>(LIVE_TRADE_STATE_URL, 60_000)
 
   useEffect(() => {
     const scriptId = "kakao-ad-script"
@@ -559,16 +615,10 @@ export default function BitcoinEntryChart() {
   const updateTime = candles.at(-1)?.time
   const signalTone = selectedSignal?.direction === "LONG" ? "text-cyan-200" : "text-amber-200"
 
-  const paperOpenUnrealizedPct =
-    paperState?.openPosition && currentPrice
-      ? ((currentPrice - paperState.openPosition.entryPrice) / paperState.openPosition.entryPrice) *
-        paperState.openPosition.leverage *
-        100
-      : null
-  const paperTotalReturnPct = paperState
-    ? ((paperState.currentBalance - paperState.startingBalance) / paperState.startingBalance) * 100
-    : 0
+  // Unrealized/return % are recomputed inside renderTradeStatusPanel/renderEntryPill
+  // (they need the same values per-state) — only the recent-trades slice is needed here.
   const paperRecentTrades = paperState ? [...paperState.trades].reverse().slice(0, MAX_TRADE_ROWS) : []
+  const liveRecentTrades = liveState ? [...liveState.trades].reverse().slice(0, MAX_TRADE_ROWS) : []
 
   useEffect(() => {
     if (!displaySignals.length) {
@@ -581,6 +631,320 @@ export default function BitcoinEntryChart() {
       setSelectedSignalKey(signalKey(displaySignals[displaySignals.length - 1]))
     }
   }, [displaySignals, selectedSignalKey])
+
+  // Balance/open-position header + status banner — shared between the paper simulator
+  // and the real Bitget bot, only differing in copy/accent color (config).
+  function renderTradeStatusPanel(state: PaperTradeState | null, config: TradePanelConfig) {
+    const unrealizedPct = openUnrealizedPct(state, currentPrice)
+    const returnPct = totalReturnPct(state)
+    const accent = ACCENT[config.accent]
+
+    return (
+      <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">{config.subtitleLabel}</p>
+            <div className="mt-1 flex items-baseline gap-2">
+              <h2 className="text-base font-semibold text-zinc-50">{config.title}</h2>
+              <span className={`text-sm font-bold tabular-nums ${accent.priceText}`}>
+                {currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}
+              </span>
+              <span className={`text-xs font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
+              </span>
+            </div>
+          </div>
+          {state && (
+            <div className="flex items-end gap-6 text-right">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">시작 금액</p>
+                <p className="mt-1 text-base font-semibold tabular-nums text-zinc-400">{formatPrice(state.startingBalance)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">현재 금액</p>
+                <p className={`mt-1 text-xl font-bold tabular-nums ${returnPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                  {formatPrice(state.currentBalance)}
+                </p>
+                <p className={`text-xs font-medium tabular-nums ${returnPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                  {returnPct >= 0 ? "+" : ""}
+                  {returnPct.toFixed(2)}%
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {!state ? (
+          <p className="text-sm text-zinc-500">{config.loadingText}</p>
+        ) : state.openPosition ? (
+          <div className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 ${accent.openBorder}`}>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className={`rounded-md px-2 py-1 text-[10px] font-bold text-[#061014] ${accent.badgeBg}`}>{config.badgeText}</span>
+              <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">{state.openPosition.leverage}x</span>
+              <span className="text-sm text-zinc-200">
+                {patternLabel(state.openPosition.pattern)} · 투입 {formatPrice(state.openPosition.size)} · 진입{" "}
+                {formatPrice(state.openPosition.entryPrice)} ({formatDateTime(state.openPosition.entryTime)})
+              </span>
+              <span className="text-xs text-zinc-500">
+                익절가 {formatPrice(state.openPosition.takeProfit)} · 손절가 {formatPrice(state.openPosition.stopLoss)}
+              </span>
+            </div>
+            <span
+              className={`text-sm font-semibold tabular-nums ${(unrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}
+            >
+              {unrealizedPct !== null ? `${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}% 평가손익` : "-"}
+            </span>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">
+            {config.emptyText}
+          </div>
+        )}
+      </section>
+    )
+  }
+
+  // Compact "still open" pill overlaid on the chart — offsetClass stacks the live pill
+  // below the paper one so both can be visible at once without overlapping.
+  function renderEntryPill(state: PaperTradeState | null, colors: { entry: string }, offsetClass: string) {
+    if (!state?.openPosition) return null
+    const unrealizedPct = openUnrealizedPct(state, currentPrice)
+
+    return (
+      <div className={`pointer-events-none absolute left-1/2 z-10 -translate-x-1/2 ${offsetClass}`}>
+        <div
+          className="flex items-center gap-2 whitespace-nowrap rounded-full border bg-[#0a1017]/95 px-3.5 py-1.5 text-xs font-semibold shadow-[0_10px_24px_rgba(0,0,0,0.4)]"
+          style={{ borderColor: `${colors.entry}66` }}
+        >
+          <span className="rounded-full px-1.5 py-0.5 text-[10px] font-bold text-[#061014]" style={{ backgroundColor: colors.entry }}>
+            B
+          </span>
+          <span className="text-zinc-300">진입 {formatPrice(state.openPosition.entryPrice)}</span>
+          <span className="text-zinc-600">·</span>
+          <span className={`tabular-nums ${(unrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+            {unrealizedPct !== null ? `${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}%` : "-"}
+          </span>
+          <span className="text-zinc-500">({state.openPosition.leverage}x)</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Chart B/S markers (entry, TP/SL lines, closed-trade markers). Colors distinguish the
+  // paper simulator from the real bot so the two are never confused on the same chart.
+  function renderTradeMarkers(state: PaperTradeState | null, colors: { entry: string; win: string; loss: string }) {
+    if (!state) return null
+    const spacing = candles.length > 1 ? candles[1].time - candles[0].time : Infinity
+
+    // Maps a real trade timestamp onto the currently displayed candle set — works
+    // regardless of which timeframe the chart is showing, since trades always run on 5m
+    // data but the chart can be on 15m/1h/4h.
+    const indexAtTime = (time: number) => {
+      if (!candles.length || time < candles[0].time) return -1
+      let found = -1
+      for (let i = 0; i < candles.length; i += 1) {
+        if (candles[i].time <= time) found = i
+        else break
+      }
+      if (found === candles.length - 1 && time - candles[found].time > spacing * 2) return -1
+      return found
+    }
+
+    const xAt = (index: number) => chart.padding.left + index * chart.candleWidth + chart.candleWidth / 2
+    const yAt = (price: number) => chart.padding.top + priceY(price, chart.min, chart.max, chart.priceHeight)
+
+    const openPosition = state.openPosition
+    const openEntryIndex = openPosition ? indexAtTime(openPosition.entryTime) : -1
+
+    return (
+      <g>
+        {openPosition && (
+          <>
+            {openPosition.takeProfit >= chart.min && openPosition.takeProfit <= chart.max && (
+              <g>
+                <line
+                  x1={chart.padding.left}
+                  x2={chart.width - chart.padding.right}
+                  y1={yAt(openPosition.takeProfit)}
+                  y2={yAt(openPosition.takeProfit)}
+                  stroke={colors.win}
+                  strokeDasharray="5 5"
+                  strokeWidth="1.4"
+                  strokeOpacity="0.85"
+                />
+                <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.takeProfit) + 4} fill={colors.win} fontSize="11" fontWeight="800">
+                  S {formatPrice(openPosition.takeProfit)}
+                </text>
+              </g>
+            )}
+            {openPosition.stopLoss >= chart.min && openPosition.stopLoss <= chart.max && (
+              <g>
+                <line
+                  x1={chart.padding.left}
+                  x2={chart.width - chart.padding.right}
+                  y1={yAt(openPosition.stopLoss)}
+                  y2={yAt(openPosition.stopLoss)}
+                  stroke={colors.loss}
+                  strokeDasharray="5 5"
+                  strokeWidth="1.4"
+                  strokeOpacity="0.85"
+                />
+                <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.stopLoss) + 4} fill={colors.loss} fontSize="11" fontWeight="800">
+                  S {formatPrice(openPosition.stopLoss)}
+                </text>
+              </g>
+            )}
+            {/* The B mark belongs at the actual entry candle (time position), not
+                smeared across the full width at the price level — a vertical guide
+                plus a bigger glowing marker makes that exact candle easy to spot even
+                when it sits far from the currently selected signal. */}
+            {openEntryIndex >= 0 && (
+              <g>
+                <line
+                  x1={xAt(openEntryIndex)}
+                  x2={xAt(openEntryIndex)}
+                  y1={chart.padding.top}
+                  y2={chart.priceHeight + chart.gap + chart.volumeHeight}
+                  stroke={colors.entry}
+                  strokeDasharray="4 6"
+                  strokeOpacity="0.35"
+                  strokeWidth="1.2"
+                />
+                <circle
+                  cx={xAt(openEntryIndex)}
+                  cy={yAt(openPosition.entryPrice)}
+                  r="10"
+                  fill="#071017"
+                  stroke={colors.entry}
+                  strokeWidth="2.4"
+                  filter="url(#signalGlow)"
+                />
+                <text
+                  x={xAt(openEntryIndex)}
+                  y={yAt(openPosition.entryPrice) + 4}
+                  fill={colors.entry}
+                  fontSize="11"
+                  fontWeight="800"
+                  textAnchor="middle"
+                >
+                  B
+                </text>
+              </g>
+            )}
+            {/* Entry candle predates the current timeframe's visible window (e.g. a
+                position held longer than 15m×121 candles) — pin the marker to the left
+                edge instead of hiding it outright. */}
+            {openEntryIndex < 0 && openPosition.entryPrice >= chart.min && openPosition.entryPrice <= chart.max && (
+              <g>
+                <circle cx={chart.padding.left + 2} cy={yAt(openPosition.entryPrice)} r="8" fill="#071017" stroke={colors.entry} strokeWidth="2" />
+                <text x={chart.padding.left + 2} y={yAt(openPosition.entryPrice) + 4} fill={colors.entry} fontSize="10" fontWeight="800" textAnchor="middle">
+                  B
+                </text>
+                <text x={chart.padding.left + 14} y={yAt(openPosition.entryPrice) - 8} fill={colors.entry} fontSize="10" fontWeight="700">
+                  ← 화면 밖 진입
+                </text>
+              </g>
+            )}
+          </>
+        )}
+
+        {state.trades.slice(-20).map((trade) => {
+          const entryIndex = indexAtTime(trade.entryTime)
+          const exitIndex = indexAtTime(trade.exitTime)
+          const won = trade.exitReason === "take-profit"
+          const exitColor = won ? colors.win : colors.loss
+
+          return (
+            <g key={`${trade.entryTime}-${trade.exitTime}`}>
+              {entryIndex >= 0 && (
+                <g>
+                  <circle cx={xAt(entryIndex)} cy={yAt(trade.entryPrice)} r="8" fill="#071017" stroke={colors.entry} strokeWidth="1.6" />
+                  <text x={xAt(entryIndex)} y={yAt(trade.entryPrice) + 4} fill={colors.entry} fontSize="10" fontWeight="800" textAnchor="middle">
+                    B
+                  </text>
+                </g>
+              )}
+              {exitIndex >= 0 && (
+                <g>
+                  <circle cx={xAt(exitIndex)} cy={yAt(trade.exitPrice)} r="8" fill="#071017" stroke={exitColor} strokeWidth="1.6" />
+                  <text x={xAt(exitIndex)} y={yAt(trade.exitPrice) + 4} fill={exitColor} fontSize="10" fontWeight="800" textAnchor="middle">
+                    S
+                  </text>
+                </g>
+              )}
+            </g>
+          )
+        })}
+      </g>
+    )
+  }
+
+  // Trade-history table — shared between paper and live, only the title/empty-state copy
+  // and the "no state yet" (live-trade.js never run) case differ.
+  function renderTradeHistoryTable(state: PaperTradeState | null, recentTrades: PaperTrade[], title: string, notStartedText: string) {
+    return (
+      <section className="border-t border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
+        <div className="mb-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Trade history</p>
+          <h2 className="mt-1 text-base font-semibold text-zinc-50">{title}</h2>
+        </div>
+
+        {!state || (recentTrades.length === 0 && !state.openPosition) ? (
+          <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
+            {notStartedText}
+          </div>
+        ) : recentTrades.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
+            아직 청산된 거래가 없습니다. 위 현황에서 보유중인 포지션을 확인하세요.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-[#1c2733] text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+                  <th className="py-2 pr-3">패턴</th>
+                  <th className="py-2 pr-3">레버리지</th>
+                  <th className="py-2 pr-3">진입</th>
+                  <th className="py-2 pr-3">청산</th>
+                  <th className="py-2 pr-3">결과</th>
+                  <th className="py-2 text-right">손익</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentTrades.map((trade) => (
+                  <tr key={`${trade.entryTime}-${trade.exitTime}`} className="border-b border-[#161f29] last:border-0">
+                    <td className="py-2.5 pr-3 text-zinc-300">{patternLabel(trade.pattern)}</td>
+                    <td className="py-2.5 pr-3 tabular-nums text-zinc-400">{trade.leverage}x</td>
+                    <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
+                      {formatPrice(trade.entryPrice)}
+                      <span className="ml-1 text-zinc-600">{formatDateTime(trade.entryTime)}</span>
+                    </td>
+                    <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
+                      {formatPrice(trade.exitPrice)}
+                      <span className="ml-1 text-zinc-600">{formatDateTime(trade.exitTime)}</span>
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                          trade.exitReason === "take-profit" ? "bg-emerald-300/15 text-emerald-300" : "bg-rose-300/15 text-rose-300"
+                        }`}
+                      >
+                        {trade.exitReason === "take-profit" ? "익절" : "손절"}
+                      </span>
+                    </td>
+                    <td className={`py-2.5 text-right font-semibold tabular-nums ${trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                      {trade.pnlPct >= 0 ? "+" : ""}
+                      {trade.pnlPct.toFixed(2)}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    )
+  }
 
   return (
     <main className="min-h-screen bg-[#05070a] px-3 py-6 text-zinc-100 sm:px-6 lg:px-10">
@@ -623,85 +987,23 @@ export default function BitcoinEntryChart() {
           </div>
         </header>
 
-        <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                Paper trading · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%
-              </p>
-              <div className="mt-1 flex items-baseline gap-2">
-                <h2 className="text-base font-semibold text-zinc-50">가상매매 현황</h2>
-                <span className="text-sm font-bold tabular-nums text-cyan-200">
-                  {currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}
-                </span>
-                <span className={`text-xs font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                  {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
-                </span>
-              </div>
-            </div>
-            {paperState && (
-              <div className="flex items-end gap-6 text-right">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">시작 금액</p>
-                  <p className="mt-1 text-base font-semibold tabular-nums text-zinc-400">
-                    {formatPrice(paperState.startingBalance)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">현재 금액</p>
-                  <p
-                    className={`mt-1 text-xl font-bold tabular-nums ${
-                      paperTotalReturnPct >= 0 ? "text-emerald-300" : "text-rose-300"
-                    }`}
-                  >
-                    {formatPrice(paperState.currentBalance)}
-                  </p>
-                  <p
-                    className={`text-xs font-medium tabular-nums ${
-                      paperTotalReturnPct >= 0 ? "text-emerald-300" : "text-rose-300"
-                    }`}
-                  >
-                    {paperTotalReturnPct >= 0 ? "+" : ""}
-                    {paperTotalReturnPct.toFixed(2)}%
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {!paperState ? (
-            <p className="text-sm text-zinc-500">가상매매 기록을 불러오는 중입니다...</p>
-          ) : paperState.openPosition ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-300/30 bg-cyan-300/5 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="rounded-md bg-cyan-300/90 px-2 py-1 text-[10px] font-bold text-[#061014]">보유중</span>
-                <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">
-                  {paperState.openPosition.leverage}x
-                </span>
-                <span className="text-sm text-zinc-200">
-                  {patternLabel(paperState.openPosition.pattern)} · 투입 {formatPrice(paperState.openPosition.size)} · 진입{" "}
-                  {formatPrice(paperState.openPosition.entryPrice)} ({formatDateTime(paperState.openPosition.entryTime)})
-                </span>
-                <span className="text-xs text-zinc-500">
-                  익절가 {formatPrice(paperState.openPosition.takeProfit)} · 손절가 {formatPrice(paperState.openPosition.stopLoss)}
-                </span>
-              </div>
-              <span
-                className={`text-sm font-semibold tabular-nums ${
-                  (paperOpenUnrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"
-                }`}
-              >
-                {paperOpenUnrealizedPct !== null
-                  ? `${paperOpenUnrealizedPct >= 0 ? "+" : ""}${paperOpenUnrealizedPct.toFixed(2)}% 평가손익`
-                  : "-"}
-              </span>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">
-              현재 보유중인 가상 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.
-            </div>
-          )}
-        </section>
+        {renderTradeStatusPanel(paperState, {
+          title: "가상매매 현황",
+          subtitleLabel: "Paper trading · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%",
+          accent: "cyan",
+          badgeText: "보유중",
+          emptyText: "현재 보유중인 가상 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
+          loadingText: "가상매매 기록을 불러오는 중입니다...",
+        })}
+        {liveState &&
+          renderTradeStatusPanel(liveState, {
+            title: "실전매매 현황 (Live)",
+            subtitleLabel: "Live trading · Bitget 실계좌 · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%",
+            accent: "amber",
+            badgeText: "실전 보유중",
+            emptyText: "현재 보유중인 실전 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
+            loadingText: "실전매매 기록을 불러오는 중입니다...",
+          })}
 
         <section className="flex flex-col gap-4 bg-[#080b11] px-5 py-5 lg:px-7">
           <div className="relative aspect-[1200/461] max-h-[520px] min-h-[240px] w-full overflow-hidden rounded-2xl border border-[#1a2432] bg-[#0a0e15] shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
@@ -715,21 +1017,8 @@ export default function BitcoinEntryChart() {
               <span className="rounded-full border border-emerald-400/30 bg-emerald-300/10 px-2.5 py-1 text-emerald-200/90">S 익절</span>
               <span className="rounded-full border border-rose-400/30 bg-rose-300/10 px-2.5 py-1 text-rose-200/90">S 손절</span>
             </div>
-            {paperState?.openPosition && (
-              <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2">
-                <div className="flex items-center gap-2 whitespace-nowrap rounded-full border border-cyan-300/40 bg-[#0a1017]/95 px-3.5 py-1.5 text-xs font-semibold shadow-[0_10px_24px_rgba(0,0,0,0.4)]">
-                  <span className="rounded-full bg-cyan-300/90 px-1.5 py-0.5 text-[10px] font-bold text-[#061014]">B</span>
-                  <span className="text-zinc-300">진입 {formatPrice(paperState.openPosition.entryPrice)}</span>
-                  <span className="text-zinc-600">·</span>
-                  <span className={`tabular-nums ${(paperOpenUnrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                    {paperOpenUnrealizedPct !== null
-                      ? `${paperOpenUnrealizedPct >= 0 ? "+" : ""}${paperOpenUnrealizedPct.toFixed(2)}%`
-                      : "-"}
-                  </span>
-                  <span className="text-zinc-500">({paperState.openPosition.leverage}x)</span>
-                </div>
-              </div>
-            )}
+            {renderEntryPill(paperState, { entry: PAPER_MARKER_COLORS.entry }, "top-4")}
+            {renderEntryPill(liveState, { entry: LIVE_MARKER_COLORS.entry }, "top-14")}
             {loading && candles.length === 0 ? (
               <div className="relative flex h-full items-center justify-center text-zinc-500">Loading chart...</div>
             ) : error ? (
@@ -903,151 +1192,8 @@ export default function BitcoinEntryChart() {
                   )
                 })()}
 
-                {paperState && (() => {
-                  const spacing = candles.length > 1 ? candles[1].time - candles[0].time : Infinity
-
-                  // Maps a real trade timestamp onto the currently displayed candle set —
-                  // works regardless of which timeframe the chart is showing, since paper
-                  // trades always run on 5m data but the chart can be on 15m/1h/4h.
-                  const indexAtTime = (time: number) => {
-                    if (!candles.length || time < candles[0].time) return -1
-                    let found = -1
-                    for (let i = 0; i < candles.length; i += 1) {
-                      if (candles[i].time <= time) found = i
-                      else break
-                    }
-                    if (found === candles.length - 1 && time - candles[found].time > spacing * 2) return -1
-                    return found
-                  }
-
-                  const xAt = (index: number) => chart.padding.left + index * chart.candleWidth + chart.candleWidth / 2
-                  const yAt = (price: number) => chart.padding.top + priceY(price, chart.min, chart.max, chart.priceHeight)
-
-                  const openPosition = paperState.openPosition
-                  const openEntryIndex = openPosition ? indexAtTime(openPosition.entryTime) : -1
-
-                  return (
-                    <g>
-                      {openPosition && (
-                        <>
-                          {openPosition.takeProfit >= chart.min && openPosition.takeProfit <= chart.max && (
-                            <g>
-                              <line
-                                x1={chart.padding.left}
-                                x2={chart.width - chart.padding.right}
-                                y1={yAt(openPosition.takeProfit)}
-                                y2={yAt(openPosition.takeProfit)}
-                                stroke="#34d399"
-                                strokeDasharray="5 5"
-                                strokeWidth="1.4"
-                                strokeOpacity="0.85"
-                              />
-                              <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.takeProfit) + 4} fill="#34d399" fontSize="11" fontWeight="800">
-                                S {formatPrice(openPosition.takeProfit)}
-                              </text>
-                            </g>
-                          )}
-                          {openPosition.stopLoss >= chart.min && openPosition.stopLoss <= chart.max && (
-                            <g>
-                              <line
-                                x1={chart.padding.left}
-                                x2={chart.width - chart.padding.right}
-                                y1={yAt(openPosition.stopLoss)}
-                                y2={yAt(openPosition.stopLoss)}
-                                stroke="#fb7185"
-                                strokeDasharray="5 5"
-                                strokeWidth="1.4"
-                                strokeOpacity="0.85"
-                              />
-                              <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.stopLoss) + 4} fill="#fb7185" fontSize="11" fontWeight="800">
-                                S {formatPrice(openPosition.stopLoss)}
-                              </text>
-                            </g>
-                          )}
-                          {/* The B mark belongs at the actual entry candle (time position), not
-                              smeared across the full width at the price level — a vertical guide
-                              plus a bigger glowing marker makes that exact candle easy to spot even
-                              when it sits far from the currently selected signal. */}
-                          {openEntryIndex >= 0 && (
-                            <g>
-                              <line
-                                x1={xAt(openEntryIndex)}
-                                x2={xAt(openEntryIndex)}
-                                y1={chart.padding.top}
-                                y2={chart.priceHeight + chart.gap + chart.volumeHeight}
-                                stroke="#67e8f9"
-                                strokeDasharray="4 6"
-                                strokeOpacity="0.35"
-                                strokeWidth="1.2"
-                              />
-                              <circle
-                                cx={xAt(openEntryIndex)}
-                                cy={yAt(openPosition.entryPrice)}
-                                r="10"
-                                fill="#071017"
-                                stroke="#67e8f9"
-                                strokeWidth="2.4"
-                                filter="url(#signalGlow)"
-                              />
-                              <text
-                                x={xAt(openEntryIndex)}
-                                y={yAt(openPosition.entryPrice) + 4}
-                                fill="#67e8f9"
-                                fontSize="11"
-                                fontWeight="800"
-                                textAnchor="middle"
-                              >
-                                B
-                              </text>
-                            </g>
-                          )}
-                          {/* Entry candle predates the current timeframe's visible window (e.g. a
-                              position held longer than 15m×121 candles) — pin the marker to the left
-                              edge instead of hiding it outright. */}
-                          {openEntryIndex < 0 && openPosition.entryPrice >= chart.min && openPosition.entryPrice <= chart.max && (
-                            <g>
-                              <circle cx={chart.padding.left + 2} cy={yAt(openPosition.entryPrice)} r="8" fill="#071017" stroke="#67e8f9" strokeWidth="2" />
-                              <text x={chart.padding.left + 2} y={yAt(openPosition.entryPrice) + 4} fill="#67e8f9" fontSize="10" fontWeight="800" textAnchor="middle">
-                                B
-                              </text>
-                              <text x={chart.padding.left + 14} y={yAt(openPosition.entryPrice) - 8} fill="#67e8f9" fontSize="10" fontWeight="700">
-                                ← 화면 밖 진입
-                              </text>
-                            </g>
-                          )}
-                        </>
-                      )}
-
-                      {paperState.trades.slice(-20).map((trade) => {
-                        const entryIndex = indexAtTime(trade.entryTime)
-                        const exitIndex = indexAtTime(trade.exitTime)
-                        const won = trade.exitReason === "take-profit"
-                        const exitColor = won ? "#34d399" : "#fb7185"
-
-                        return (
-                          <g key={`${trade.entryTime}-${trade.exitTime}`}>
-                            {entryIndex >= 0 && (
-                              <g>
-                                <circle cx={xAt(entryIndex)} cy={yAt(trade.entryPrice)} r="8" fill="#071017" stroke="#67e8f9" strokeWidth="1.6" />
-                                <text x={xAt(entryIndex)} y={yAt(trade.entryPrice) + 4} fill="#67e8f9" fontSize="10" fontWeight="800" textAnchor="middle">
-                                  B
-                                </text>
-                              </g>
-                            )}
-                            {exitIndex >= 0 && (
-                              <g>
-                                <circle cx={xAt(exitIndex)} cy={yAt(trade.exitPrice)} r="8" fill="#071017" stroke={exitColor} strokeWidth="1.6" />
-                                <text x={xAt(exitIndex)} y={yAt(trade.exitPrice) + 4} fill={exitColor} fontSize="10" fontWeight="800" textAnchor="middle">
-                                  S
-                                </text>
-                              </g>
-                            )}
-                          </g>
-                        )
-                      })}
-                    </g>
-                  )
-                })()}
+                {renderTradeMarkers(paperState, PAPER_MARKER_COLORS)}
+                {renderTradeMarkers(liveState, LIVE_MARKER_COLORS)}
 
                 {candles.filter((_, index) => index % 20 === 0).map((candle, index) => {
                   const candleIndex = index * 20
@@ -1097,72 +1243,19 @@ export default function BitcoinEntryChart() {
 
         </section>
 
-        <section className="border-t border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
-          <div className="mb-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Paper trading history</p>
-            <h2 className="mt-1 text-base font-semibold text-zinc-50">매매 결과</h2>
-          </div>
-
-          {!paperState || (paperRecentTrades.length === 0 && !paperState.openPosition) ? (
-            <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
-              아직 체결된 가상매매 기록이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.
-            </div>
-          ) : paperRecentTrades.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
-              아직 청산된 거래가 없습니다. 위 &ldquo;가상매매 현황&rdquo;에서 보유중인 포지션을 확인하세요.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[560px] border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-[#1c2733] text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
-                    <th className="py-2 pr-3">패턴</th>
-                    <th className="py-2 pr-3">레버리지</th>
-                    <th className="py-2 pr-3">진입</th>
-                    <th className="py-2 pr-3">청산</th>
-                    <th className="py-2 pr-3">결과</th>
-                    <th className="py-2 text-right">손익</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {paperRecentTrades.map((trade) => (
-                    <tr key={`${trade.entryTime}-${trade.exitTime}`} className="border-b border-[#161f29] last:border-0">
-                      <td className="py-2.5 pr-3 text-zinc-300">{patternLabel(trade.pattern)}</td>
-                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">{trade.leverage}x</td>
-                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
-                        {formatPrice(trade.entryPrice)}
-                        <span className="ml-1 text-zinc-600">{formatDateTime(trade.entryTime)}</span>
-                      </td>
-                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
-                        {formatPrice(trade.exitPrice)}
-                        <span className="ml-1 text-zinc-600">{formatDateTime(trade.exitTime)}</span>
-                      </td>
-                      <td className="py-2.5 pr-3">
-                        <span
-                          className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
-                            trade.exitReason === "take-profit"
-                              ? "bg-emerald-300/15 text-emerald-300"
-                              : "bg-rose-300/15 text-rose-300"
-                          }`}
-                        >
-                          {trade.exitReason === "take-profit" ? "익절" : "손절"}
-                        </span>
-                      </td>
-                      <td
-                        className={`py-2.5 text-right font-semibold tabular-nums ${
-                          trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300"
-                        }`}
-                      >
-                        {trade.pnlPct >= 0 ? "+" : ""}
-                        {trade.pnlPct.toFixed(2)}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        {renderTradeHistoryTable(
+          paperState,
+          paperRecentTrades,
+          "가상매매 결과",
+          "아직 체결된 가상매매 기록이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
+        )}
+        {liveState &&
+          renderTradeHistoryTable(
+            liveState,
+            liveRecentTrades,
+            "실전매매 결과 (Live)",
+            "아직 체결된 실전매매 기록이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
           )}
-        </section>
 
         <section className="border-t border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
           <div className="mb-4 flex items-end justify-between gap-4">
