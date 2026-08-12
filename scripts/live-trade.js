@@ -129,8 +129,17 @@ async function reconcilePosition(config, state) {
 
   if (closingOrder) {
     exitPrice = Number(closingOrder.priceAvg ?? closingOrder.price);
-    exitReason =
-      Math.abs(exitPrice - opened.takeProfit) <= Math.abs(exitPrice - opened.stopLoss) ? "take-profit" : "stop-loss";
+    // A real TP/SL trigger fill lands within a hair of the exact preset price. Only
+    // trust "closer to TP than SL" as a real take-profit when it's actually close to TP
+    // in absolute terms — otherwise (e.g. a manual close somewhere near entry) that
+    // proximity comparison can mislabel a losing trade as "take-profit" just because it
+    // happened to be numerically nearer the target than the stop. Fall back to the
+    // sign of the actual price move, which can never contradict the P&L shown next to it.
+    const nearTakeProfit = Math.abs(exitPrice - opened.takeProfit) / opened.takeProfit < 0.001;
+    const nearStopLoss = Math.abs(exitPrice - opened.stopLoss) / opened.stopLoss < 0.001;
+    if (nearTakeProfit && !nearStopLoss) exitReason = "take-profit";
+    else if (nearStopLoss && !nearTakeProfit) exitReason = "stop-loss";
+    else exitReason = exitPrice >= opened.entryPrice ? "take-profit" : "stop-loss";
   } else {
     // Couldn't find the closing fill in order history (the exact response field names
     // are a best guess — see the NOTE above, verify on first real close and adjust if

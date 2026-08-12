@@ -330,6 +330,13 @@ function formatPrice(price: number) {
   return `$${Math.round(price).toLocaleString()}`
 }
 
+// Account-balance figures (as opposed to BTC price levels) are small dollar amounts on a
+// live account — rounding to the nearest whole dollar hides essentially all the signal
+// (e.g. $12.36 -> $12.26 both round to "$12"), so these always show cents.
+function formatBalance(value: number) {
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
 function formatTime(time: number, timeframe: Timeframe) {
   return new Intl.DateTimeFormat("ko-KR", {
     hour: "2-digit",
@@ -650,12 +657,12 @@ export default function BitcoinEntryChart() {
             <div className="flex items-end gap-6 text-right">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">시작 금액</p>
-                <p className="mt-1 text-base font-semibold tabular-nums text-zinc-400">{formatPrice(state.startingBalance)}</p>
+                <p className="mt-1 text-base font-semibold tabular-nums text-zinc-400">{formatBalance(state.startingBalance)}</p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">현재 금액</p>
                 <p className={`mt-1 text-xl font-bold tabular-nums ${returnPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                  {formatPrice(state.currentBalance)}
+                  {formatBalance(state.currentBalance)}
                 </p>
                 <p className={`text-xs font-medium tabular-nums ${returnPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
                   {returnPct >= 0 ? "+" : ""}
@@ -674,7 +681,7 @@ export default function BitcoinEntryChart() {
               <span className={`rounded-md px-2 py-1 text-[10px] font-bold text-[#061014] ${accent.badgeBg}`}>{config.badgeText}</span>
               <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">{state.openPosition.leverage}x</span>
               <span className="text-sm text-zinc-200">
-                {patternLabel(state.openPosition.pattern)} · 투입 {formatPrice(state.openPosition.size)} · 진입{" "}
+                {patternLabel(state.openPosition.pattern)} · 투입 {formatBalance(state.openPosition.size)} · 진입{" "}
                 {formatPrice(state.openPosition.entryPrice)} ({formatDateTime(state.openPosition.entryTime)})
               </span>
               <span className="text-xs text-zinc-500">
