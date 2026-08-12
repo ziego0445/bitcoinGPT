@@ -280,11 +280,11 @@ async function reconcileOnStartup(config, state) {
       stopLoss: position.openPriceAvg * (1 - STOP_LOSS_PCT / LEVERAGE),
       orderId: null,
     };
-    saveState(state);
+    persistState(state, true);
   } else if (!position && state.openPosition) {
     log("Local state had an open position, but the exchange doesn't — it must have closed while this script wasn't running.");
     await reconcilePosition(config, state);
-    saveState(state);
+    persistState(state, true);
   }
 }
 
