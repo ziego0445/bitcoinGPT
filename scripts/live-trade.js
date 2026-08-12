@@ -40,7 +40,9 @@ function log(...args) {
 function loadState() {
   try {
     const raw = fs.readFileSync(STATE_PATH, "utf8");
-    return JSON.parse(raw);
+    const state = JSON.parse(raw);
+    delete state.needsPush; // dropped field — see note on pushRetryNeeded below
+    return state;
   } catch {
     return {
       mode: "live",
@@ -49,7 +51,6 @@ function loadState() {
       startedAt: Date.now(),
       openPosition: null,
       trades: [],
-      needsPush: false,
     };
   }
 }
@@ -59,11 +60,19 @@ function saveState(state) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
+// Whether the last git push attempt failed and needs a retry. Deliberately NOT part of
+// the persisted `state` object: writing that flag into data/live-trades.json used to
+// leave the file locally modified-but-uncommitted after a failed push (the flag flip
+// itself was never committed), which then made every subsequent `git pull --rebase`
+// fail with "you have unstaged changes" — a permanent lockout. Keeping it in memory only
+// means a failed push leaves the working tree exactly as clean as the last real commit.
+let pushRetryNeeded = false;
+
 // Only touches git when the state actually changed (or a previous push failed and needs
 // a retry) — mirrors paper-trade.js's "don't spam commits on idle ticks" principle.
 function persistState(state, changed) {
   if (changed) saveState(state);
-  if (!changed && !state.needsPush) return;
+  if (!changed && !pushRetryNeeded) return;
 
   try {
     if (changed) {
@@ -72,14 +81,10 @@ function persistState(state, changed) {
     }
     execFileSync("git", ["pull", "--rebase", "origin", "main"], GIT_OPTS);
     execFileSync("git", ["push", "origin", "HEAD:main"], GIT_OPTS);
-    if (state.needsPush) {
-      state.needsPush = false;
-      saveState(state);
-    }
-    log(changed ? "Committed and pushed live-trade state." : "Retried a previously failed push — succeeded.");
+    log(pushRetryNeeded ? "Retried a previously failed push — succeeded." : "Committed and pushed live-trade state.");
+    pushRetryNeeded = false;
   } catch (error) {
-    state.needsPush = true;
-    saveState(state);
+    pushRetryNeeded = true;
     log("WARN: git commit/push failed, will retry next tick. Data is safe on disk either way.", error.message);
   }
 }
