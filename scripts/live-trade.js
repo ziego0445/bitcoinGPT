@@ -26,7 +26,11 @@ const LEVERAGE = 10;
 const TAKE_PROFIT_PCT = 0.08; // +8% on account equity (= +0.8% price move at 10x)
 const STOP_LOSS_PCT = 0.08;
 const ALERT_MIN_SCORE = 85;
-const CANDLE_GRANULARITY = "5m";
+// The PDF strategy this bot follows is written by/for a 15m-primary trader (explicitly
+// warns against fast 5m entries for at least one pattern) — matches the dashboard's own
+// default timeframe. detectSignals()'s conditions are relative-to-recent-average, not
+// absolute, so the same logic carries over to a coarser candle size without retuning.
+const CANDLE_GRANULARITY = "15m";
 const CANDLE_LIMIT = 200;
 const POLL_INTERVAL_MS = 30_000;
 const REPO_ROOT = path.join(__dirname, "..");
