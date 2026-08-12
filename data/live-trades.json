@@ -3,6 +3,16 @@
   "startingBalance": 12.359818514079,
   "currentBalance": 12.359818514079,
   "startedAt": 1786546644896,
-  "openPosition": null,
+  "openPosition": {
+    "pattern": "panic",
+    "score": 95.66624111998243,
+    "leverage": 10,
+    "size": 11.7418275845,
+    "entryTime": 1786547175201,
+    "entryPrice": 63456.8,
+    "takeProfit": 63952.056,
+    "stopLoss": 62936.944,
+    "orderId": "1471450991105314817"
+  },
   "trades": []
 }
