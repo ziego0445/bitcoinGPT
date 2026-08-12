@@ -1,18 +1,24 @@
 {
   "mode": "live",
   "startingBalance": 12.359818514079,
-  "currentBalance": 12.359818514079,
+  "currentBalance": 12.263582666079,
   "startedAt": 1786546644896,
-  "openPosition": {
-    "pattern": "panic",
-    "score": 95.66624111998243,
-    "leverage": 10,
-    "size": 11.7418275845,
-    "entryTime": 1786547175201,
-    "entryPrice": 63456.8,
-    "takeProfit": 63952.056,
-    "stopLoss": 62936.944,
-    "orderId": "1471450991105314817"
-  },
-  "trades": []
+  "openPosition": null,
+  "trades": [
+    {
+      "pattern": "panic",
+      "score": 95.66624111998243,
+      "leverage": 10,
+      "entryTime": 1786547175201,
+      "entryPrice": 63456.8,
+      "exitTime": 1786548151378,
+      "exitPrice": 63454.1,
+      "exitReason": "take-profit",
+      "pnlPct": -0.04254863151000941,
+      "balanceBefore": 12.359818514079,
+      "balanceAfter": 12.263582666079,
+      "orderId": "1471450991105314817",
+      "exitOrderId": "1471455085102534660"
+    }
+  ]
 }
