@@ -27,23 +27,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node scripts/check-bitcoin-signal.js
 
-      # `if: always()` so a Telegram failure (bad secrets, API hiccup, etc.) can never
-      # freeze the paper-trading simulation — it must keep running every 5 minutes
-      # regardless of whether the alert step succeeded.
-      - name: Update paper-trading simulation
-        if: always()
-        run: node scripts/paper-trade.js
-
-      - name: Commit paper-trade state if it changed
-        if: always()
-        run: |
-          if git diff --quiet -- data/paper-trades.json; then
-            echo "No paper-trade state change."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/paper-trades.json
-          git commit -m "Update paper-trade state [skip ci]"
-          git pull --rebase origin main
-          git push origin HEAD:main
+      # Paper-trading simulation (scripts/paper-trade.js) retired now that
+      # scripts/live-trade.js runs against the real Bitget account instead — see that
+      # script for details. data/paper-trades.json is left in place as history but no
+      # longer updated here.

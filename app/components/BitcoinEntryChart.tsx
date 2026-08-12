@@ -79,16 +79,10 @@ const TIMEFRAMES: Timeframe[] = ["5m", "15m", "1h", "4h"]
 const CANDLE_LIMIT = 121
 const MAX_EVENT_CARDS = 10
 const MAX_TRADE_ROWS = 12
-const PAPER_TRADE_STATE_URL =
-  "https://raw.githubusercontent.com/ziego0445/bitcoinGPT/main/data/paper-trades.json"
 // Written by scripts/live-trade.js, which runs on a local always-on PC (not GitHub
-// Actions) and places real Bitget orders — see that file for details. The panel that
-// reads this simply doesn't render until the file exists (script has run at least once).
+// Actions) and places real Bitget orders — see that file for details.
 const LIVE_TRADE_STATE_URL =
   "https://raw.githubusercontent.com/ziego0445/bitcoinGPT/main/data/live-trades.json"
-const PAPER_MARKER_COLORS = { entry: "#67e8f9", win: "#34d399", loss: "#fb7185" }
-// Real-money trades get a visually distinct (amber/rose) marker palette so they're never
-// mistaken for the paper simulator on the same chart.
 const LIVE_MARKER_COLORS = { entry: "#fbbf24", win: "#4ade80", loss: "#f43f5e" }
 
 function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
@@ -496,7 +490,6 @@ export default function BitcoinEntryChart() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(true)
   const [selectedSignalKey, setSelectedSignalKey] = useState("")
-  const paperState = usePolledJson<PaperTradeState>(PAPER_TRADE_STATE_URL, 60_000)
   const liveState = usePolledJson<PaperTradeState>(LIVE_TRADE_STATE_URL, 60_000)
 
   useEffect(() => {
@@ -617,7 +610,6 @@ export default function BitcoinEntryChart() {
 
   // Unrealized/return % are recomputed inside renderTradeStatusPanel/renderEntryPill
   // (they need the same values per-state) — only the recent-trades slice is needed here.
-  const paperRecentTrades = paperState ? [...paperState.trades].reverse().slice(0, MAX_TRADE_ROWS) : []
   const liveRecentTrades = liveState ? [...liveState.trades].reverse().slice(0, MAX_TRADE_ROWS) : []
 
   useEffect(() => {
@@ -760,6 +752,26 @@ export default function BitcoinEntryChart() {
       <g>
         {openPosition && (
           <>
+            {/* Entry price gets the same full-width reference line as TP/SL so it's
+                readable at a glance regardless of where the entry candle has scrolled to
+                — the candle-anchored B marker below still pins down the exact candle. */}
+            {openPosition.entryPrice >= chart.min && openPosition.entryPrice <= chart.max && (
+              <g>
+                <line
+                  x1={chart.padding.left}
+                  x2={chart.width - chart.padding.right}
+                  y1={yAt(openPosition.entryPrice)}
+                  y2={yAt(openPosition.entryPrice)}
+                  stroke={colors.entry}
+                  strokeDasharray="5 5"
+                  strokeWidth="1.4"
+                  strokeOpacity="0.85"
+                />
+                <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.entryPrice) + 4} fill={colors.entry} fontSize="11" fontWeight="800">
+                  B {formatPrice(openPosition.entryPrice)}
+                </text>
+              </g>
+            )}
             {openPosition.takeProfit >= chart.min && openPosition.takeProfit <= chart.max && (
               <g>
                 <line
@@ -773,7 +785,7 @@ export default function BitcoinEntryChart() {
                   strokeOpacity="0.85"
                 />
                 <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.takeProfit) + 4} fill={colors.win} fontSize="11" fontWeight="800">
-                  S {formatPrice(openPosition.takeProfit)}
+                  TP {formatPrice(openPosition.takeProfit)}
                 </text>
               </g>
             )}
@@ -790,7 +802,7 @@ export default function BitcoinEntryChart() {
                   strokeOpacity="0.85"
                 />
                 <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.stopLoss) + 4} fill={colors.loss} fontSize="11" fontWeight="800">
-                  S {formatPrice(openPosition.stopLoss)}
+                  SL {formatPrice(openPosition.stopLoss)}
                 </text>
               </g>
             )}
@@ -853,6 +865,7 @@ export default function BitcoinEntryChart() {
           const exitIndex = indexAtTime(trade.exitTime)
           const won = trade.exitReason === "take-profit"
           const exitColor = won ? colors.win : colors.loss
+          const exitLabel = won ? "TP" : "SL"
 
           return (
             <g key={`${trade.entryTime}-${trade.exitTime}`}>
@@ -866,9 +879,9 @@ export default function BitcoinEntryChart() {
               )}
               {exitIndex >= 0 && (
                 <g>
-                  <circle cx={xAt(exitIndex)} cy={yAt(trade.exitPrice)} r="8" fill="#071017" stroke={exitColor} strokeWidth="1.6" />
-                  <text x={xAt(exitIndex)} y={yAt(trade.exitPrice) + 4} fill={exitColor} fontSize="10" fontWeight="800" textAnchor="middle">
-                    S
+                  <circle cx={xAt(exitIndex)} cy={yAt(trade.exitPrice)} r="10" fill="#071017" stroke={exitColor} strokeWidth="1.6" />
+                  <text x={xAt(exitIndex)} y={yAt(trade.exitPrice) + 3} fill={exitColor} fontSize="8" fontWeight="800" textAnchor="middle">
+                    {exitLabel}
                   </text>
                 </g>
               )}
@@ -987,23 +1000,14 @@ export default function BitcoinEntryChart() {
           </div>
         </header>
 
-        {renderTradeStatusPanel(paperState, {
-          title: "가상매매 현황",
-          subtitleLabel: "Paper trading · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%",
-          accent: "cyan",
-          badgeText: "보유중",
-          emptyText: "현재 보유중인 가상 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
-          loadingText: "가상매매 기록을 불러오는 중입니다...",
+        {renderTradeStatusPanel(liveState, {
+          title: "실전매매 현황 (Live)",
+          subtitleLabel: "Live trading · Bitget 실계좌 · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%",
+          accent: "amber",
+          badgeText: "실전 보유중",
+          emptyText: "현재 보유중인 실전 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
+          loadingText: "실전매매 기록을 불러오는 중입니다...",
         })}
-        {liveState &&
-          renderTradeStatusPanel(liveState, {
-            title: "실전매매 현황 (Live)",
-            subtitleLabel: "Live trading · Bitget 실계좌 · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%",
-            accent: "amber",
-            badgeText: "실전 보유중",
-            emptyText: "현재 보유중인 실전 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
-            loadingText: "실전매매 기록을 불러오는 중입니다...",
-          })}
 
         <section className="flex flex-col gap-4 bg-[#080b11] px-5 py-5 lg:px-7">
           <div className="relative aspect-[1200/461] max-h-[520px] min-h-[240px] w-full overflow-hidden rounded-2xl border border-[#1a2432] bg-[#0a0e15] shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
@@ -1013,12 +1017,11 @@ export default function BitcoinEntryChart() {
               <span className="rounded-full border border-[#28394b] bg-[#0a1017]/90 px-2.5 py-1 text-zinc-400">거래량</span>
               <span className="rounded-full border border-cyan-400/30 bg-cyan-300/10 px-2.5 py-1 text-cyan-200/90">진입 후보</span>
               <span className="rounded-full border border-amber-400/30 bg-amber-300/10 px-2.5 py-1 text-amber-200/90">주의</span>
-              <span className="rounded-full border border-cyan-400/30 bg-cyan-300/10 px-2.5 py-1 text-cyan-200/90">B 가상매수</span>
-              <span className="rounded-full border border-emerald-400/30 bg-emerald-300/10 px-2.5 py-1 text-emerald-200/90">S 익절</span>
-              <span className="rounded-full border border-rose-400/30 bg-rose-300/10 px-2.5 py-1 text-rose-200/90">S 손절</span>
+              <span className="rounded-full border border-amber-400/30 bg-amber-300/10 px-2.5 py-1 text-amber-200/90">B 진입</span>
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-300/10 px-2.5 py-1 text-emerald-200/90">TP 익절</span>
+              <span className="rounded-full border border-rose-400/30 bg-rose-300/10 px-2.5 py-1 text-rose-200/90">SL 손절</span>
             </div>
-            {renderEntryPill(paperState, { entry: PAPER_MARKER_COLORS.entry }, "top-4")}
-            {renderEntryPill(liveState, { entry: LIVE_MARKER_COLORS.entry }, "top-14")}
+            {renderEntryPill(liveState, { entry: LIVE_MARKER_COLORS.entry }, "top-4")}
             {loading && candles.length === 0 ? (
               <div className="relative flex h-full items-center justify-center text-zinc-500">Loading chart...</div>
             ) : error ? (
@@ -1192,7 +1195,6 @@ export default function BitcoinEntryChart() {
                   )
                 })()}
 
-                {renderTradeMarkers(paperState, PAPER_MARKER_COLORS)}
                 {renderTradeMarkers(liveState, LIVE_MARKER_COLORS)}
 
                 {candles.filter((_, index) => index % 20 === 0).map((candle, index) => {
@@ -1244,13 +1246,6 @@ export default function BitcoinEntryChart() {
         </section>
 
         {renderTradeHistoryTable(
-          paperState,
-          paperRecentTrades,
-          "가상매매 결과",
-          "아직 체결된 가상매매 기록이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
-        )}
-        {liveState &&
-          renderTradeHistoryTable(
             liveState,
             liveRecentTrades,
             "실전매매 결과 (Live)",
@@ -1266,7 +1261,7 @@ export default function BitcoinEntryChart() {
             <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
           </div>
           <p className="mb-4 text-xs text-zinc-500">
-            이 카드들은 지금 선택한 {timeframe} 기준의 참고용 후보 신호입니다. 실제 가상매매 봇은 5분봉 기준으로 자동 진입하므로 진입 시점이 다를 수 있습니다 — 실제 진입가/손익은 차트의 점선 B 표시와 상단 배지를 확인하세요.
+            이 카드들은 지금 선택한 {timeframe} 기준의 참고용 후보 신호입니다. 실제 매매 봇은 5분봉 기준으로 자동 진입하므로 진입 시점이 다를 수 있습니다 — 실제 진입가/손익은 차트의 B/TP/SL 가로줄과 상단 배지를 확인하세요.
           </p>
 
           <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
