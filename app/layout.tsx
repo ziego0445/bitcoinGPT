@@ -5,7 +5,7 @@ import type React from "react"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata = {
-  title: "Bitcoin Entry Radar",
+  title: "역추세매매 나도 해보자",
   description: "BTCUSDT entry-reference signals based on volume, support, and price action.",
 }
 

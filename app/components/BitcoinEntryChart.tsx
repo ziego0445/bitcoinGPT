@@ -353,7 +353,7 @@ function formatBalance(value: number) {
 
 // Small status-style badge for the fixed strategy parameters (score threshold, leverage,
 // win rate) — "good"/"warn" are reserved for win-rate direction, never reused elsewhere.
-function StatPill({ icon, label, tone = "neutral" }: { icon: string; label: string; tone?: "good" | "warn" | "neutral" }) {
+function StatPill({ label, tone = "neutral" }: { label: string; tone?: "good" | "warn" | "neutral" }) {
   const toneClass =
     tone === "good"
       ? "border-emerald-400/30 bg-emerald-300/10 text-emerald-200"
@@ -363,7 +363,6 @@ function StatPill({ icon, label, tone = "neutral" }: { icon: string; label: stri
 
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${toneClass}`}>
-      <span aria-hidden>{icon}</span>
       {label}
     </span>
   )
@@ -707,10 +706,9 @@ export default function BitcoinEntryChart() {
     return (
       <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <StatPill icon="🎯" label={`${ALERT_MIN_SCORE}점 이상 신호`} />
-          <StatPill icon="🚀" label={`${LEVERAGE}x 레버리지`} />
+          <StatPill label={`${ALERT_MIN_SCORE}점 이상 신호`} />
+          <StatPill label={`${LEVERAGE}x 레버리지`} />
           <StatPill
-            icon="📊"
             label={winRatePct !== null ? `승률 ${winRatePct.toFixed(0)}% (${wins}/${closedTrades.length})` : "승률 집계 전"}
             tone={winRatePct === null ? "neutral" : winRatePct >= 50 ? "good" : "warn"}
           />
@@ -1059,13 +1057,16 @@ export default function BitcoinEntryChart() {
             <div className="grid h-10 w-10 place-items-center rounded-xl border border-cyan-300/30 bg-cyan-300/10 text-sm font-black text-cyan-200">B</div>
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-300/60">BTCUSDT · Binance 차트</p>
-              <h1 className="mt-0.5 text-lg font-semibold text-zinc-50">Bitcoin Entry Radar</h1>
+              <div className="mt-0.5 flex items-baseline gap-2">
+                <h1 className="text-lg font-semibold text-zinc-50">역추세매매</h1>
+                <span className="text-sm font-medium text-zinc-500">나도 해보자</span>
+              </div>
               <div className="mt-1 flex items-center gap-1.5">
                 <span className="relative flex h-1.5 w-1.5">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
                   <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 </span>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-300/80">Live trading · Bitget 실계좌</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-300/80">Live trading · 실계좌</p>
               </div>
             </div>
             <div className="hidden border-l border-[#232f3d] pl-4 sm:block">
@@ -1101,7 +1102,7 @@ export default function BitcoinEntryChart() {
 
         {renderTradeStatusPanel(liveState, {
           title: "실전매매 현황 (Live)",
-          subtitleLabel: "Live trading · Bitget 실계좌 · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%",
+          subtitleLabel: "Live trading · 실계좌 · 85점 이상 신호 · 10x 레버리지 · 익절 +8% / 손절 -8%",
           accent: "amber",
           badgeText: "실전 보유중",
           emptyText: "현재 보유중인 실전 포지션이 없습니다. 85점 이상 신호가 뜨면 자동으로 진입합니다.",
