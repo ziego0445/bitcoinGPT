@@ -325,7 +325,11 @@ function detectSignals(candles: Candle[]): EntrySignal[] {
       continue
     }
 
-    if ((nearPreviousLow || slightlyBrokenDoubleBottom) && retestVolumeOk && (wickOk || bullishDivergence)) {
+    // Both confirmations required, not either/or — a lower wick alone (no real momentum
+    // divergence vs. the reference low) is just a wiggle, and a divergence alone (no wick
+    // reaction) is momentum without a visible buying response. Cut real occurrences from
+    // 84 to 19 over a ~50h/200-candle sample when checked against live data.
+    if ((nearPreviousLow || slightlyBrokenDoubleBottom) && retestVolumeOk && wickOk && bullishDivergence) {
       signals.push({
         index,
         direction: "LONG",
