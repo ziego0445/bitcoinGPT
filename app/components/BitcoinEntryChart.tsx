@@ -722,12 +722,9 @@ export default function BitcoinEntryChart() {
                 display size, per the big-number convention: tabular-nums is for columns
                 that must align, not a single large standalone value. */}
             <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">비트코인 현재가</p>
-            <div className="mt-0.5 flex flex-wrap items-baseline gap-3">
+            <div className="mt-0.5">
               <span className={`text-3xl font-bold leading-none tracking-tight ${accent.priceText}`}>
                 {currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}
-              </span>
-              <span className={`text-sm font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
               </span>
             </div>
           </div>
