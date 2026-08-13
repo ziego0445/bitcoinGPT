@@ -747,23 +747,39 @@ export default function BitcoinEntryChart() {
         {!state ? (
           <p className="text-sm text-zinc-500">{config.loadingText}</p>
         ) : state.openPosition ? (
-          <div className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 ${accent.openBorder}`}>
-            <div className="flex flex-wrap items-center gap-3">
-              <span className={`rounded-md px-2 py-1 text-[10px] font-bold text-[#061014] ${accent.badgeBg}`}>{config.badgeText}</span>
-              <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">{state.openPosition.leverage}x</span>
-              <span className="text-sm text-zinc-200">
-                {patternLabel(state.openPosition.pattern)} · 투입 {formatBalance(state.openPosition.size)} · 진입{" "}
-                {formatPrice(state.openPosition.entryPrice)} ({formatDateTime(state.openPosition.entryTime)})
-              </span>
-              <span className="text-xs text-zinc-500">
-                익절가 {formatPrice(state.openPosition.takeProfit)} · 손절가 {formatPrice(state.openPosition.stopLoss)}
+          <div className={`rounded-xl border px-4 py-3 ${accent.openBorder}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-md px-2 py-1 text-[10px] font-bold text-[#061014] ${accent.badgeBg}`}>{config.badgeText}</span>
+                <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">{state.openPosition.leverage}x</span>
+                <span className="text-xs text-zinc-400">
+                  {patternLabel(state.openPosition.pattern)} · 투입 {formatBalance(state.openPosition.size)} ·{" "}
+                  {formatDateTime(state.openPosition.entryTime)}
+                </span>
+              </div>
+              <span
+                className={`text-sm font-semibold tabular-nums ${(unrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}
+              >
+                {unrealizedPct !== null ? `${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}% 평가손익` : "-"}
               </span>
             </div>
-            <span
-              className={`text-sm font-semibold tabular-nums ${(unrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}
-            >
-              {unrealizedPct !== null ? `${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}% 평가손익` : "-"}
-            </span>
+
+            {/* 진입가/TP/SL — 차트의 B/TP/SL 가로줄과 같은 색으로 맞춰서 어디서 봐도 같은
+                의미로 읽히게 함. 이 셋은 나란히 비교해서 읽는 숫자라 tabular-nums로 정렬. */}
+            <div className="mt-3 grid grid-cols-3 gap-2 border-t border-white/10 pt-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">진입가</p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-amber-200">{formatPrice(state.openPosition.entryPrice)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">TP 익절가</p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-emerald-300">{formatPrice(state.openPosition.takeProfit)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">SL 손절가</p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-rose-300">{formatPrice(state.openPosition.stopLoss)}</p>
+              </div>
+            </div>
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">
