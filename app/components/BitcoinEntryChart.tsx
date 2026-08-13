@@ -717,12 +717,15 @@ export default function BitcoinEntryChart() {
         <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">{config.subtitleLabel}</p>
-            <div className="mt-1 flex items-baseline gap-2">
-              <h2 className="text-base font-semibold text-zinc-50">{config.title}</h2>
-              <span className={`text-sm font-bold tabular-nums ${accent.priceText}`}>
+            <h2 className="mt-0.5 text-sm font-semibold text-zinc-400">{config.title}</h2>
+            {/* The one hero figure on this page — proportional (not tabular) figures at
+                display size, per the big-number convention: tabular-nums is for columns
+                that must align, not a single large standalone value. */}
+            <div className="mt-1 flex flex-wrap items-baseline gap-3">
+              <span className={`text-5xl font-bold leading-none tracking-tight ${accent.priceText}`}>
                 {currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}
               </span>
-              <span className={`text-xs font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+              <span className={`text-sm font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
                 {priceMove >= 0 ? "+" : ""}{priceMove.toFixed(2)}%
               </span>
             </div>
