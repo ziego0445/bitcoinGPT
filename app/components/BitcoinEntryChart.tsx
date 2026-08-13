@@ -721,8 +721,9 @@ export default function BitcoinEntryChart() {
             {/* The one hero figure on this page — proportional (not tabular) figures at
                 display size, per the big-number convention: tabular-nums is for columns
                 that must align, not a single large standalone value. */}
-            <div className="mt-1 flex flex-wrap items-baseline gap-3">
-              <span className={`text-5xl font-bold leading-none tracking-tight ${accent.priceText}`}>
+            <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">비트코인 현재가</p>
+            <div className="mt-0.5 flex flex-wrap items-baseline gap-3">
+              <span className={`text-3xl font-bold leading-none tracking-tight ${accent.priceText}`}>
                 {currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}
               </span>
               <span className={`text-sm font-semibold tabular-nums ${priceMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
