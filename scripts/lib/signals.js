@@ -93,19 +93,32 @@ function isNearSupport(price, supports, tolerance = 0.006) {
   return supports.some((support) => Math.abs(price - support.price) / support.price <= tolerance);
 }
 
+// The "previous low" a double-bottom retests should be the one the market actually
+// remembers — the candle where selling climaxed on volume — not just whichever pivot
+// happens to be most recent. getPivotLows() picks pivots by price geometry alone, so a
+// quiet, insignificant wiggle can outrank the real capitulation candle just for being
+// newer. Pick the highest-volume pivot among the last few instead of blindly using the
+// last one; capped to a small recent window so this still means "the recent low", not
+// "the biggest low in the whole fetched history".
+function selectPreviousPivot(pivots, lookback = 3) {
+  const recent = pivots.slice(-lookback);
+  if (!recent.length) return undefined;
+  return recent.reduce((best, pivot) => (pivot.volume > best.volume ? pivot : best), recent[0]);
+}
+
 const SIGNAL_TITLES = {
-  panic: "패닉셀 반등 후보",
+  "key-candle": "장대+거래량 컨펌 후보",
   "double-bottom": "쌍바닥 후보",
-  divergence: "상승 다이버전스 후보",
-  "slow-bottom": "바닥 다지기 후보",
   avoid: "빠른 진입 금지",
 };
 
 const SIGNAL_REASONS = {
-  panic: ["최근 저점을 새로 만들었습니다.", "평균보다 거래량이 크게 늘었습니다.", "긴 봉 또는 아래꼬리로 매수 반응이 보입니다."],
+  "key-candle": [
+    "직전 장대봉이 거래량을 동반한 과매도권 음봉이었습니다.",
+    "그다음 봉이 도지 또는 작은 양봉으로 매수 반응을 보였습니다.",
+    "이번 봉의 아래꼬리가 지지를 다시 확인해줍니다.",
+  ],
   "double-bottom": ["직전 저점 부근을 다시 테스트했습니다.", "재하락 거래량이 과하지 않습니다.", "아래꼬리 또는 다이버전스가 붙었습니다."],
-  divergence: ["가격은 저점 부근인데 하락 힘은 약해졌습니다.", "최근 지지선 근처에서 버티는 흐름입니다.", "추격보다 반등 확인용 포인트입니다."],
-  "slow-bottom": ["하락 폭이 점점 줄어듭니다.", "거래량도 같이 줄어 매도 압력이 둔해졌습니다.", "반등은 느릴 수 있어 확인이 필요합니다."],
   avoid: ["첫 장대봉이 너무 강합니다.", "저점까지 매도 거래량이 계속 큽니다.", "PDF 기준 빠른 롱을 피하는 자리입니다."],
 };
 
@@ -129,11 +142,7 @@ function detectSignals(candles) {
     const lastFour = candles.slice(index - 3, index + 1);
     const avgVolume = average(recent.map((candle) => candle.volume));
     const avgBody = average(recent.map(bodySize));
-    const avgRange = average(recent.map(rangeSize));
     const volumeSpike = avgVolume > 0 ? current.volume / avgVolume : 0;
-    const bodyExpansion = avgBody > 0 ? bodySize(current) / avgBody : 0;
-    const rangeExpansion = avgRange > 0 ? rangeSize(current) / avgRange : 0;
-    const freshLow = current.low <= Math.min(...recent.map((candle) => candle.low));
     const lastBody = bodySize(current);
     const firstCandle = lastFour[0];
     const firstBody = bodySize(firstCandle);
@@ -149,7 +158,7 @@ function detectSignals(candles) {
     const supports = getSupportLevels(candles.slice(0, index + 1));
     const supportNearby = isNearSupport(current.low, supports);
     const pivots = getPivotLows(candles, index - 1);
-    const previousPivot = pivots.at(-1);
+    const previousPivot = selectPreviousPivot(pivots);
     const nearPreviousLow = previousPivot
       ? Math.abs(current.low - previousPivot.price) / previousPivot.price <= 0.007
       : false;
@@ -169,11 +178,6 @@ function detectSignals(candles) {
       ? current.volume <= previousPivot.volume * 1.15 && volumeSpike <= 1.6
       : false;
     const wickOk = lowerWickRatio(current) >= 0.34;
-    const sellingSlows =
-      current.volume < avgVolume * 0.95 &&
-      bodySize(current) < avgBody * 0.9 &&
-      rangeSize(current) < avgRange * 0.95;
-    const bodyExtreme = bodyExpansion >= 1.1 || bodyExpansion <= 0.4;
 
     if ((firstCandleDominates && steppedDecline) || highSellVolumeIntoRetest) {
       signals.push({
@@ -186,13 +190,41 @@ function detectSignals(candles) {
       continue;
     }
 
-    if (freshLow && volumeSpike >= 2.0 && rangeExpansion >= 1.45 && bodyExtreme && (wickOk || supportNearby)) {
+    // "키캔들" 3봉 패턴 (index-2, index-1, index=current):
+    //   1. 장대봉: 거래량 실린 과매도권 음봉 (장대 + 거래량 많이 + 과매도)
+    //   2. 컨펌봉: 도지 또는 작은 양봉으로 매수 반응
+    //   3. 진입봉(현재): 아래꼬리로 지지를 재확인 — 여기서 진입
+    const keyCandle = candles[index - 2];
+    const confirmCandle = candles[index - 1];
+    const keyCandleIsLong = bodySize(keyCandle) > avgBody * 1.5;
+    const keyCandleHeavyVolume = keyCandle.volume > avgVolume * 1.5;
+    const keyCandleIsBearish = keyCandle.close < keyCandle.open;
+    const keyCandleOversold = keyCandle.low <= Math.min(...recent.map((candle) => candle.low));
+    const confirmBody = bodySize(confirmCandle);
+    const confirmIsDojiOrSmallBull =
+      confirmBody <= avgBody * 0.6 || (confirmCandle.close > confirmCandle.open && confirmBody <= avgBody * 0.9);
+
+    if (
+      keyCandleIsLong &&
+      keyCandleHeavyVolume &&
+      keyCandleIsBearish &&
+      keyCandleOversold &&
+      confirmIsDojiOrSmallBull &&
+      wickOk
+    ) {
       signals.push({
         index,
         direction: "LONG",
-        score: clamp(70 + volumeSpike * 5 + rangeExpansion * 4 + Math.abs(bodyExpansion - 1) * 3 + (supportNearby ? 6 : 0), 70, 96),
-        pattern: "panic",
-        detail: "마지막 장대봉, 거래량 폭발, 지지/꼬리 조건이 겹친 패닉셀 반등 후보.",
+        score: clamp(
+          78 +
+            (avgVolume > 0 ? (keyCandle.volume / avgVolume) * 2 : 0) +
+            (confirmCandle.close > confirmCandle.open ? 5 : 0) +
+            (supportNearby ? 6 : 0),
+          78,
+          96,
+        ),
+        pattern: "key-candle",
+        detail: "장대 음봉+거래량 폭발 후 도지/양봉 컨펌, 다음 봉 아래꼬리로 지지 재확인.",
       });
       continue;
     }
@@ -204,28 +236,6 @@ function detectSignals(candles) {
         score: clamp(66 + (bullishDivergence ? 10 : 0) + (wickOk ? 6 : 0) + (supportNearby ? 5 : 0), 66, 92),
         pattern: "double-bottom",
         detail: "직전 저점 부근 재방문. 거래량이 과하지 않고 꼬리/다이버전스가 붙은 쌍바닥 후보.",
-      });
-      continue;
-    }
-
-    if (freshLow && bullishDivergence && supportNearby) {
-      signals.push({
-        index,
-        direction: "LONG",
-        score: 72,
-        pattern: "divergence",
-        detail: "저점은 낮거나 비슷하지만 모멘텀은 덜 빠지는 상승 다이버전스 후보.",
-      });
-      continue;
-    }
-
-    if (freshLow && sellingSlows && (wickOk || current.close >= current.open)) {
-      signals.push({
-        index,
-        direction: "LONG",
-        score: 58,
-        pattern: "slow-bottom",
-        detail: "하락 폭과 거래량이 줄어드는 바닥 다지기 후보. 반등은 느릴 수 있음.",
       });
     }
   }
