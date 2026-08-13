@@ -110,9 +110,33 @@ function resumeWatermark(state) {
   return state.startedAt ?? null;
 }
 
-// Called every tick before looking for a new entry. If the exchange no longer has a
-// position that the local state thinks is open, the attached TP/SL trigger fired — find
-// the closing fill in order history and record it. Exchange state always wins.
+// Adopts an exchange position the local state doesn't know about. This isn't just a
+// startup thing: if placeOrder() succeeds server-side but the response is lost (a network
+// drop between sending the request and reading the reply), state.openPosition never gets
+// set locally even though a real order went through — the next tick would otherwise see
+// "no position" and could open a second one on top of it. Called every tick, not once.
+function adoptUntrackedPosition(state, position) {
+  log("Exchange reports an open position local state didn't know about — adopting it (entry time is a best-effort 'now').");
+  // TP/SL are estimated from the entry price using this bot's own fixed parameters — we
+  // don't know Bitget's actual attached trigger prices in this recovery path, but this
+  // account only ever gets positions from this bot, so the estimate should match.
+  state.openPosition = {
+    pattern: "recovered",
+    score: 0,
+    leverage: position.leverage || LEVERAGE,
+    size: position.marginSize,
+    entryTime: Date.now(),
+    entryPrice: position.openPriceAvg,
+    takeProfit: position.openPriceAvg * (1 + TAKE_PROFIT_PCT / LEVERAGE),
+    stopLoss: position.openPriceAvg * (1 - STOP_LOSS_PCT / LEVERAGE),
+    orderId: null,
+  };
+}
+
+// Called every tick before looking for a new entry. Reconciles both directions against
+// the real exchange position — adopts one we didn't know about, or (if the exchange no
+// longer has a position that the local state thinks is open) records the closing fill.
+// Exchange state always wins.
 //
 // Field names (priceAvg / cTime / uTime / side / reduceOnly) were confirmed against a
 // real filled order — see the manual round-trip test run during setup. One thing that
@@ -123,7 +147,12 @@ function resumeWatermark(state) {
 // `side === "sell"` are the fallbacks that actually do the work here.
 async function reconcilePosition(config, state) {
   const position = await bitget.getSinglePosition(config);
-  if (position) return; // still open, or nothing was open — nothing to reconcile
+
+  if (position && !state.openPosition) {
+    adoptUntrackedPosition(state, position);
+    return;
+  }
+  if (position) return; // still open and already tracked — nothing to reconcile
   if (!state.openPosition) return; // idle tick, no position on either side
 
   const opened = state.openPosition;
@@ -220,6 +249,20 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
   const stopLoss = price * (1 - STOP_LOSS_PCT / LEVERAGE);
   const size = bitget.roundSize((marginUsdt * LEVERAGE) / price, contract);
 
+  // roundSize() always rounds UP to the contract's minimum, even when the resolved
+  // margin implies a much smaller size — on a small/depleted balance this would silently
+  // ask for more margin than we actually have. Bitget would reject it anyway, but doing
+  // that on every 30s tick until the candle rolls over just spams rejected live orders.
+  // Skip cleanly instead and wait for the next signal.
+  const impliedMargin = (Number(size) * price) / LEVERAGE;
+  if (impliedMargin > marginUsdt * 1.05) {
+    log(
+      `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin, ` +
+        `only $${marginUsdt.toFixed(2)} available.`,
+    );
+    return;
+  }
+
   log(`Signal: ${latest.pattern} score=${latest.score} price=${price} margin=${marginUsdt.toFixed(2)} size=${size} — placing order...`);
 
   const order = await bitget.placeOrder(config, {
@@ -292,31 +335,12 @@ async function tick(config, state) {
 
 // Runs once at boot, before the interval starts, so a restart mid-trade never causes a
 // duplicate entry — the exchange's real position always overrides local assumptions.
+// Just the regular per-tick reconciliation (see reconcilePosition above), forced to
+// persist immediately rather than waiting for tick()'s own before/after diff.
 async function reconcileOnStartup(config, state) {
-  const position = await bitget.getSinglePosition(config);
-
-  if (position && !state.openPosition) {
-    log("Exchange reports an open position local state didn't know about — adopting it (entry time is a best-effort 'now').");
-    // TP/SL are estimated from the entry price using this bot's own fixed parameters —
-    // we don't know Bitget's actual attached trigger prices in this recovery path, but
-    // this account only ever gets positions from this bot, so the estimate should match.
-    state.openPosition = {
-      pattern: "recovered",
-      score: 0,
-      leverage: position.leverage || LEVERAGE,
-      size: position.marginSize,
-      entryTime: Date.now(),
-      entryPrice: position.openPriceAvg,
-      takeProfit: position.openPriceAvg * (1 + TAKE_PROFIT_PCT / LEVERAGE),
-      stopLoss: position.openPriceAvg * (1 - STOP_LOSS_PCT / LEVERAGE),
-      orderId: null,
-    };
-    persistState(state, true);
-  } else if (!position && state.openPosition) {
-    log("Local state had an open position, but the exchange doesn't — it must have closed while this script wasn't running.");
-    await reconcilePosition(config, state);
-    persistState(state, true);
-  }
+  const before = JSON.stringify(state);
+  await reconcilePosition(config, state);
+  if (JSON.stringify(state) !== before) persistState(state, true);
 }
 
 async function main() {
