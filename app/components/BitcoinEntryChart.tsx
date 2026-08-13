@@ -83,6 +83,10 @@ const TIMEFRAMES: Timeframe[] = ["5m", "15m", "1h", "4h"]
 const CANDLE_LIMIT = 121
 const MAX_EVENT_CARDS = 10
 const MAX_TRADE_ROWS = 12
+// Mirrors scripts/live-trade.js's ALERT_MIN_SCORE/LEVERAGE — separate files (browser vs
+// Node) can't share a module, so keep these in sync by hand if the bot's values change.
+const ALERT_MIN_SCORE = 85
+const LEVERAGE = 10
 // Written by scripts/live-trade.js, which runs on a local always-on PC (not GitHub
 // Actions) and places real Bitget orders — see that file for details.
 const LIVE_TRADE_STATE_URL =
@@ -347,6 +351,50 @@ function formatBalance(value: number) {
   return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+// Small status-style badge for the fixed strategy parameters (score threshold, leverage,
+// win rate) — "good"/"warn" are reserved for win-rate direction, never reused elsewhere.
+function StatPill({ icon, label, tone = "neutral" }: { icon: string; label: string; tone?: "good" | "warn" | "neutral" }) {
+  const toneClass =
+    tone === "good"
+      ? "border-emerald-400/30 bg-emerald-300/10 text-emerald-200"
+      : tone === "warn"
+        ? "border-rose-400/30 bg-rose-300/10 text-rose-200"
+        : "border-[#28394b] bg-[#0a1017] text-zinc-300"
+
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${toneClass}`}>
+      <span aria-hidden>{icon}</span>
+      {label}
+    </span>
+  )
+}
+
+// value + label stat tile — same contract used for 시작/현재 금액/총손익률.
+function StatTile({
+  label,
+  value,
+  tone = "neutral",
+  highlight = false,
+}: {
+  label: string
+  value: string
+  tone?: "good" | "bad" | "neutral"
+  highlight?: boolean
+}) {
+  const valueClass = tone === "good" ? "text-emerald-300" : tone === "bad" ? "text-rose-300" : "text-zinc-200"
+
+  return (
+    <div
+      className={`flex-1 rounded-xl border px-3 py-2.5 text-center ${
+        highlight ? "border-amber-400/40 bg-amber-300/5" : "border-[#1c2733] bg-[#080d13]"
+      }`}
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">{label}</p>
+      <p className={`mt-1 text-lg font-bold tabular-nums ${valueClass}`}>{value}</p>
+    </div>
+  )
+}
+
 function formatTime(time: number, timeframe: Timeframe) {
   return new Intl.DateTimeFormat("ko-KR", {
     hour: "2-digit",
@@ -398,7 +446,7 @@ function signalReasons(signal?: EntrySignal) {
 
 function getDisplaySignals(signals: EntrySignal[]) {
   const recentCandidates = signals
-    .filter((signal) => signal.score >= 85 || signal.pattern === "avoid")
+    .filter((signal) => signal.score >= ALERT_MIN_SCORE || signal.pattern === "avoid")
     .sort((a, b) => b.index - a.index)
 
   const picked: EntrySignal[] = []
@@ -511,6 +559,7 @@ export default function BitcoinEntryChart() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(true)
   const [selectedSignalKey, setSelectedSignalKey] = useState("")
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const liveState = usePolledJson<PaperTradeState>(LIVE_TRADE_STATE_URL, 60_000)
 
   useEffect(() => {
@@ -651,9 +700,22 @@ export default function BitcoinEntryChart() {
     const unrealizedPct = openUnrealizedPct(state, currentPrice)
     const returnPct = totalReturnPct(state)
     const accent = ACCENT[config.accent]
+    const closedTrades = state?.trades ?? []
+    const wins = closedTrades.filter((trade) => trade.exitReason === "take-profit").length
+    const winRatePct = closedTrades.length ? (wins / closedTrades.length) * 100 : null
 
     return (
       <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <StatPill icon="🎯" label={`${ALERT_MIN_SCORE}점 이상 신호`} />
+          <StatPill icon="🚀" label={`${LEVERAGE}x 레버리지`} />
+          <StatPill
+            icon="📊"
+            label={winRatePct !== null ? `승률 ${winRatePct.toFixed(0)}% (${wins}/${closedTrades.length})` : "승률 집계 전"}
+            tone={winRatePct === null ? "neutral" : winRatePct >= 50 ? "good" : "warn"}
+          />
+        </div>
+
         <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">{config.subtitleLabel}</p>
@@ -667,25 +729,19 @@ export default function BitcoinEntryChart() {
               </span>
             </div>
           </div>
-          {state && (
-            <div className="flex items-end gap-6 text-right">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">시작 금액</p>
-                <p className="mt-1 text-base font-semibold tabular-nums text-zinc-400">{formatBalance(state.startingBalance)}</p>
-              </div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">현재 금액</p>
-                <p className={`mt-1 text-xl font-bold tabular-nums ${returnPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                  {formatBalance(state.currentBalance)}
-                </p>
-                <p className={`text-xs font-medium tabular-nums ${returnPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                  {returnPct >= 0 ? "+" : ""}
-                  {returnPct.toFixed(2)}%
-                </p>
-              </div>
-            </div>
-          )}
         </div>
+
+        {state && (
+          <div className="mb-4 flex gap-2.5">
+            <StatTile label="시작 금액" value={formatBalance(state.startingBalance)} />
+            <StatTile label="현재 금액" value={formatBalance(state.currentBalance)} tone={returnPct >= 0 ? "good" : "bad"} highlight />
+            <StatTile
+              label="총 손익률"
+              value={`${returnPct >= 0 ? "+" : ""}${returnPct.toFixed(2)}%`}
+              tone={returnPct >= 0 ? "good" : "bad"}
+            />
+          </div>
+        )}
 
         {!state ? (
           <p className="text-sm text-zinc-500">{config.loadingText}</p>
@@ -980,6 +1036,21 @@ export default function BitcoinEntryChart() {
     )
   }
 
+  // Chart hover crosshair — converts a mouse position (in rendered CSS pixels) into the
+  // nearest candle index in the SVG's own viewBox coordinate space, so the crosshair
+  // snaps to a candle center rather than tracking the raw pointer.
+  function handleChartMouseMove(event: React.MouseEvent<SVGSVGElement>) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.width) return
+    const svgX = ((event.clientX - rect.left) / rect.width) * chart.width
+    const index = Math.round((svgX - chart.padding.left - chart.candleWidth / 2) / chart.candleWidth)
+    setHoverIndex(index >= 0 && index < candles.length ? index : null)
+  }
+
+  function handleChartMouseLeave() {
+    setHoverIndex(null)
+  }
+
   return (
     <main className="min-h-screen bg-[#05070a] px-3 py-6 text-zinc-100 sm:px-6 lg:px-10">
       <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
@@ -987,8 +1058,15 @@ export default function BitcoinEntryChart() {
           <div className="flex items-center gap-4">
             <div className="grid h-10 w-10 place-items-center rounded-xl border border-cyan-300/30 bg-cyan-300/10 text-sm font-black text-cyan-200">B</div>
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-300/60">BTCUSDT · Binance</p>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-300/60">BTCUSDT · Binance 차트</p>
               <h1 className="mt-0.5 text-lg font-semibold text-zinc-50">Bitcoin Entry Radar</h1>
+              <div className="mt-1 flex items-center gap-1.5">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                </span>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-300/80">Live trading · Bitget 실계좌</p>
+              </div>
             </div>
             <div className="hidden border-l border-[#232f3d] pl-4 sm:block">
               <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">Live move</p>
@@ -1048,7 +1126,12 @@ export default function BitcoinEntryChart() {
             ) : error ? (
               <div className="relative flex h-full items-center justify-center text-red-300">{error}</div>
             ) : (
-              <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="relative h-full w-full">
+              <svg
+                viewBox={`0 0 ${chart.width} ${chart.height}`}
+                className="relative h-full w-full"
+                onMouseMove={handleChartMouseMove}
+                onMouseLeave={handleChartMouseLeave}
+              >
                 <defs>
                   <filter id="signalGlow" x="-80%" y="-80%" width="260%" height="260%">
                     <feGaussianBlur stdDeviation="3" result="blur" />
@@ -1227,6 +1310,53 @@ export default function BitcoinEntryChart() {
                     </text>
                   )
                 })}
+
+                {/* Hover crosshair + OHLCV readout — every value here is already visible
+                    elsewhere (candle body/wick, header price), the tooltip only collects
+                    it in one place; it never gates information behind hover. */}
+                {hoverIndex !== null && candles[hoverIndex] && (() => {
+                  const hovered = candles[hoverIndex]
+                  const x = chart.padding.left + hoverIndex * chart.candleWidth + chart.candleWidth / 2
+                  const up = hovered.close >= hovered.open
+                  const boxWidth = 172
+                  const boxHeight = 116
+                  const boxX = clamp(x + 14, chart.padding.left, chart.width - chart.padding.right - boxWidth)
+                  const boxY = chart.padding.top + 4
+
+                  return (
+                    <g pointerEvents="none">
+                      <line
+                        x1={x}
+                        x2={x}
+                        y1={chart.padding.top}
+                        y2={chart.priceHeight + chart.gap + chart.volumeHeight}
+                        stroke="#94a3b8"
+                        strokeWidth="1"
+                        strokeDasharray="3 4"
+                        strokeOpacity="0.55"
+                      />
+                      <rect x={boxX} y={boxY} width={boxWidth} height={boxHeight} rx="8" fill="#0b1118" stroke="#28394b" />
+                      <text x={boxX + 12} y={boxY + 20} fill="#cbd5e1" fontSize="11" fontWeight="700">
+                        {formatDateTime(hovered.time)}
+                      </text>
+                      <text x={boxX + 12} y={boxY + 40} fill="#94a3b8" fontSize="11">
+                        시가 <tspan fill="#e2e8f0" fontWeight="700">{formatPrice(hovered.open)}</tspan>
+                      </text>
+                      <text x={boxX + 12} y={boxY + 58} fill="#94a3b8" fontSize="11">
+                        고가 <tspan fill="#e2e8f0" fontWeight="700">{formatPrice(hovered.high)}</tspan>
+                      </text>
+                      <text x={boxX + 12} y={boxY + 76} fill="#94a3b8" fontSize="11">
+                        저가 <tspan fill="#e2e8f0" fontWeight="700">{formatPrice(hovered.low)}</tspan>
+                      </text>
+                      <text x={boxX + 12} y={boxY + 94} fill="#94a3b8" fontSize="11">
+                        종가 <tspan fill={up ? "#34d399" : "#fb7185"} fontWeight="700">{formatPrice(hovered.close)}</tspan>
+                      </text>
+                      <text x={boxX + 12} y={boxY + 110} fill="#64748b" fontSize="10">
+                        거래량 {hovered.volume.toFixed(1)}
+                      </text>
+                    </g>
+                  )
+                })()}
               </svg>
             )}
           </div>
