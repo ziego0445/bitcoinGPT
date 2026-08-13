@@ -43,6 +43,38 @@ function momentumAt(candles, index) {
   return (candles[index].close - base) / base;
 }
 
+// Standard Wilder's RSI (14-period), computed once over the whole series. Unlike the
+// other indicators here (which only look back 10-ish candles), Wilder's smoothing is
+// recursive — recomputing it from a short window on every call would corrupt it — so
+// this returns a parallel array (one RSI value per candle, null before enough history)
+// for detectSignals() to index into instead of calling per-candle.
+function computeRSISeries(candles, period = 14) {
+  const rsi = new Array(candles.length).fill(null);
+  if (candles.length <= period) return rsi;
+
+  let gainSum = 0;
+  let lossSum = 0;
+  for (let i = 1; i <= period; i += 1) {
+    const change = candles[i].close - candles[i - 1].close;
+    if (change > 0) gainSum += change;
+    else lossSum -= change;
+  }
+  let avgGain = gainSum / period;
+  let avgLoss = lossSum / period;
+  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+
+  for (let i = period + 1; i < candles.length; i += 1) {
+    const change = candles[i].close - candles[i - 1].close;
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+
+  return rsi;
+}
+
 function getPivotLows(candles, endIndex = candles.length - 1) {
   const pivots = [];
 
@@ -135,6 +167,7 @@ function signalReasons(pattern) {
 // rationale behind each condition.
 function detectSignals(candles) {
   const signals = [];
+  const rsiSeries = computeRSISeries(candles);
 
   for (let index = 16; index < candles.length; index += 1) {
     const current = candles[index];
@@ -143,6 +176,8 @@ function detectSignals(candles) {
     const avgVolume = average(recent.map((candle) => candle.volume));
     const avgBody = average(recent.map(bodySize));
     const volumeSpike = avgVolume > 0 ? current.volume / avgVolume : 0;
+    const rsi = rsiSeries[index];
+    const rsiOversold = rsi != null && rsi <= 40;
     const lastBody = bodySize(current);
     const firstCandle = lastFour[0];
     const firstBody = bodySize(firstCandle);
@@ -233,7 +268,10 @@ function detectSignals(candles) {
     // divergence vs. the reference low) is just a wiggle, and a divergence alone (no wick
     // reaction) is momentum without a visible buying response. Cut real occurrences from
     // 84 to 19 over a ~50h/200-candle sample when checked against live data.
-    if ((nearPreviousLow || slightlyBrokenDoubleBottom) && retestVolumeOk && wickOk && bullishDivergence) {
+    // rsiOversold guards against a shallow retest that sits "near" the previous pivot
+    // without the market actually being oversold (RSI 14 <= 40) — caught a real live entry
+    // whose retest low was only 0.15% below the pivot with RSI a neutral 58.
+    if ((nearPreviousLow || slightlyBrokenDoubleBottom) && retestVolumeOk && wickOk && bullishDivergence && rsiOversold) {
       signals.push({
         index,
         direction: "LONG",
@@ -255,6 +293,7 @@ module.exports = {
   rangeSize,
   lowerWickRatio,
   momentumAt,
+  computeRSISeries,
   getPivotLows,
   getSupportLevels,
   isNearSupport,

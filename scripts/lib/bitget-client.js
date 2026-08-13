@@ -101,9 +101,18 @@ async function request(config, method, path, { query, body } = {}) {
 // Candle granularity tokens are lowercase for sub-hour intervals ("5m"), unlike Binance's
 // scheme this doesn't otherwise differ for our use, but don't assume — verify against a
 // real response before relying on any interval other than "5m".
-async function getCandles(config, { granularity = "5m", limit = 200 } = {}) {
+async function getCandles(config, { granularity = "5m", limit = 200, endTime } = {}) {
+  // endTime (ms) pages backwards past the endpoint's 1000-row cap — pass the previous
+  // page's earliest candle time minus 1ms to walk further into the past. Unused by
+  // live-trade.js itself (always wants "now"), useful for ad-hoc backtesting.
   const data = await request(config, "GET", "/api/v2/mix/market/candles", {
-    query: { symbol: config.symbol, productType: config.productType, granularity, limit: String(limit) },
+    query: {
+      symbol: config.symbol,
+      productType: config.productType,
+      granularity,
+      limit: String(limit),
+      endTime: endTime != null ? String(endTime) : undefined,
+    },
   });
   // Don't trust whatever row order the API happens to return — sort ascending by time
   // ourselves so "drop the still-forming last candle" (`.slice(0, -1)`) is always correct
