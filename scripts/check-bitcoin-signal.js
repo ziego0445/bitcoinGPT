@@ -4,6 +4,7 @@
 // scripts/paper-trade.js.
 
 const { toCandle, detectSignals, signalTitle, signalReasons } = require("./lib/signals");
+const { sendTelegram } = require("./lib/telegram");
 
 const CANDLE_LIMIT = 200;
 const ALERT_MIN_SCORE = 85;
@@ -26,29 +27,6 @@ function buildMessage(signal, candle) {
     `설명: ${signal.detail}`,
     "주의: 자동 매매 신호가 아니라 진입 참고용입니다.",
   ].join("\n");
-}
-
-async function sendTelegram(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-
-  if (!token || !chatId) {
-    throw new Error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID environment variables are missing");
-  }
-
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Telegram request failed: ${response.status} ${await response.text()}`);
-  }
 }
 
 async function main() {

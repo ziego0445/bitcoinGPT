@@ -19,8 +19,19 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { detectSignals } = require("./lib/signals");
+const { detectSignals, signalTitle } = require("./lib/signals");
 const bitget = require("./lib/bitget-client");
+const { sendTelegram } = require("./lib/telegram");
+
+// Telegram notification is best-effort — a Telegram outage must never block or crash the
+// trading loop, so every call site awaits this wrapper instead of sendTelegram() directly.
+async function notify(text) {
+  try {
+    await sendTelegram(text);
+  } catch (error) {
+    log("WARN: Telegram notification failed (trading continues):", error.message);
+  }
+}
 
 const LEVERAGE = 10;
 const TAKE_PROFIT_PCT = 0.08; // +8% on account equity (= +0.8% price move at 10x)
@@ -238,6 +249,17 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
   };
 
   log(`Entered LONG @ ${entryPrice} (orderId ${order.orderId}), TP ${takeProfit.toFixed(1)} / SL ${stopLoss.toFixed(1)}`);
+
+  await notify(
+    [
+      "실전 포지션 진입",
+      `패턴: ${signalTitle(latest.pattern)} (${latest.score.toFixed(0)}점)`,
+      `진입가: $${entryPrice.toLocaleString()}`,
+      `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x`,
+      `TP: $${takeProfit.toFixed(1)} · SL: $${stopLoss.toFixed(1)}`,
+      `시간: ${new Date(entryTime).toLocaleString("ko-KR")}`,
+    ].join("\n"),
+  );
 }
 
 let contractConfigCache = null;
