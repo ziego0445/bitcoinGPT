@@ -6,21 +6,6 @@
   "openPosition": null,
   "trades": [
     {
-      "pattern": "panic",
-      "score": 95.66624111998243,
-      "leverage": 10,
-      "entryTime": 1786547175201,
-      "entryPrice": 63456.8,
-      "exitTime": 1786548151378,
-      "exitPrice": 63454.1,
-      "exitReason": "take-profit",
-      "pnlPct": -0.04254863151000941,
-      "balanceBefore": 12.359818514079,
-      "balanceAfter": 12.263582666079,
-      "orderId": "1471450991105314817",
-      "exitOrderId": "1471455085102534660"
-    },
-    {
       "pattern": "double-bottom",
       "score": 87,
       "leverage": 10,
