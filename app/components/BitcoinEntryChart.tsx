@@ -22,7 +22,7 @@ interface Candle {
 interface PivotLow {
   index: number
   price: number
-  momentum: number
+  rsi: number | null
   volume: number
 }
 
@@ -144,15 +144,6 @@ function lowerWickRatio(candle: Candle) {
   return (Math.min(candle.open, candle.close) - candle.low) / rangeSize(candle)
 }
 
-function momentumAt(candles: Candle[], index: number) {
-  const lookback = Math.max(0, index - 5)
-  const base = candles[lookback].close
-  if (!base) return 0
-  // Normalized to a % move so momentum at two different price/volatility regimes
-  // (e.g. two separate pivot lows) is comparable — a raw dollar diff isn't.
-  return (candles[index].close - base) / base
-}
-
 // Standard Wilder's RSI (14-period), computed once over the whole series. Unlike the
 // other indicators here (which only look back 10-ish candles), Wilder's smoothing is
 // recursive — recomputing it from a short window on every call would corrupt it — so
@@ -185,7 +176,10 @@ function computeRSISeries(candles: Candle[], period = 14): (number | null)[] {
   return rsi
 }
 
-function getPivotLows(candles: Candle[], endIndex = candles.length - 1): PivotLow[] {
+// rsiSeries is optional — getSupportLevels() only needs pivot prices, but detectSignals()
+// passes its already-computed RSI series through so each pivot also carries the RSI(14)
+// value at that candle, needed for real RSI divergence (see bullishDivergence below).
+function getPivotLows(candles: Candle[], endIndex = candles.length - 1, rsiSeries?: (number | null)[]): PivotLow[] {
   const pivots: PivotLow[] = []
 
   for (let index = 3; index <= endIndex - 3; index += 1) {
@@ -198,7 +192,7 @@ function getPivotLows(candles: Candle[], endIndex = candles.length - 1): PivotLo
       pivots.push({
         index,
         price: candle.low,
-        momentum: momentumAt(candles, index),
+        rsi: rsiSeries ? rsiSeries[index] : null,
         volume: candle.volume,
       })
     }
@@ -279,7 +273,7 @@ function detectSignals(candles: Candle[]): EntrySignal[] {
     const firstCandleDominates = firstBody > avgBody * 1.7 && firstBody > lastBody * 1.25 && firstVolumeDominates
     const supports = getSupportLevels(candles.slice(0, index + 1))
     const supportNearby = isNearSupport(current.low, supports)
-    const pivots = getPivotLows(candles, index - 1)
+    const pivots = getPivotLows(candles, index - 1, rsiSeries)
     const previousPivot = selectPreviousPivot(pivots)
     const nearPreviousLow = previousPivot
       ? Math.abs(current.low - previousPivot.price) / previousPivot.price <= 0.007
@@ -296,9 +290,16 @@ function detectSignals(candles: Candle[]): EntrySignal[] {
       : false
     const highSellVolumeIntoRetest =
       inRetestZone && lastFour.every((candle) => candle.close < candle.open && candle.volume > avgVolume * 1.15)
-    const currentMomentum = momentumAt(candles, index)
+    // Regular bullish RSI divergence — the same definition TradingView's built-in "RSI
+    // Divergence Indicator" plots: price prints an equal-or-lower low while RSI(14) prints
+    // a higher low at that same spot, i.e. momentum quietly fading even as price probes
+    // lower. Replaces an earlier proxy that compared raw price rate-of-change instead of
+    // RSI itself — this is the real oscillator divergence the pattern is named for.
     const bullishDivergence = previousPivot
-      ? current.low <= previousPivot.price * 1.004 && currentMomentum > previousPivot.momentum
+      ? previousPivot.rsi != null &&
+        rsi != null &&
+        current.low <= previousPivot.price * 1.004 &&
+        rsi > previousPivot.rsi
       : false
     // Both volume frames (vs. the original pivot candle, and vs. the recent baseline) must
     // agree the retest isn't overloaded with sell volume — an OR here let heavy-volume
