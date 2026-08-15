@@ -666,12 +666,36 @@ export default function BitcoinEntryChart() {
   const latestSignal = displaySignals.at(-1)
   const selectedSignal = displaySignals.find((signal) => signalKey(signal) === selectedSignalKey) ?? latestSignal
   const supportLevels = useMemo(() => getSupportLevels(candles), [candles])
+  // RSI panel + divergence markers. Computed over the full (not closed-only) candle set so
+  // the line reaches the currently-forming candle, same as the price panel does.
+  const rsiSeriesFull = useMemo(() => computeRSISeries(candles), [candles])
+  const rsiPivots = useMemo(
+    () => (candles.length ? getPivotLows(candles, candles.length - 1, rsiSeriesFull) : []),
+    [candles, rsiSeriesFull],
+  )
+  // Same "regular bullish divergence" definition as detectSignals()'s bullishDivergence:
+  // price prints an equal-or-lower low while RSI(14) prints a higher low there — but drawn
+  // between every consecutive pivot-low pair (not just against the current candle), so the
+  // chart can mark divergences TradingView's RSI Divergence Indicator would also flag.
+  const rsiDivergences = useMemo(() => {
+    const pairs: { fromIndex: number; toIndex: number; fromRsi: number; toRsi: number }[] = []
+    for (let i = 0; i < rsiPivots.length - 1; i += 1) {
+      const from = rsiPivots[i]
+      const to = rsiPivots[i + 1]
+      if (from.rsi == null || to.rsi == null) continue
+      if (to.price <= from.price * 1.004 && to.rsi > from.rsi) {
+        pairs.push({ fromIndex: from.index, toIndex: to.index, fromRsi: from.rsi, toRsi: to.rsi })
+      }
+    }
+    return pairs
+  }, [rsiPivots])
   const chart = useMemo(() => {
     const width = 1200
     const priceHeight = 360
     const volumeHeight = 85
+    const rsiHeight = 90
     const gap = 16
-    const height = priceHeight + volumeHeight + gap
+    const height = priceHeight + gap + volumeHeight + gap + rsiHeight
     const padding = { top: 16, right: 68, bottom: 24, left: 8 }
     const innerWidth = width - padding.left - padding.right
     const prices = candles.flatMap((candle) => [candle.high, candle.low])
@@ -690,12 +714,20 @@ export default function BitcoinEntryChart() {
         y: padding.top + priceY(price, min, max, priceHeight),
       }
     })
+    // Top of the RSI sub-panel, stacked below the volume panel.
+    const rsiTop = padding.top + priceHeight + gap + volumeHeight + gap
+    // Shared bottom bound for full-height guide lines (crosshair, selected-signal line,
+    // entry marker) — now spans all three panels instead of stopping at the volume panel.
+    const contentBottom = rsiTop + rsiHeight
 
     return {
       width,
       height,
       priceHeight,
       volumeHeight,
+      rsiHeight,
+      rsiTop,
+      contentBottom,
       gap,
       padding,
       min,
@@ -951,7 +983,7 @@ export default function BitcoinEntryChart() {
                   x1={xAt(openEntryIndex)}
                   x2={xAt(openEntryIndex)}
                   y1={chart.padding.top}
-                  y2={chart.priceHeight + chart.gap + chart.volumeHeight}
+                  y2={chart.contentBottom}
                   stroke={colors.entry}
                   strokeDasharray="4 6"
                   strokeOpacity="0.35"
@@ -1111,6 +1143,9 @@ export default function BitcoinEntryChart() {
 
   return (
     <main className="min-h-screen bg-[#05070a] px-3 py-6 text-zinc-100 sm:px-6 lg:px-10">
+      <div className="mx-auto mb-4 w-full max-w-[1360px]">
+        <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
+      </div>
       <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#1a2432] bg-[#0c1119] px-5 py-4 lg:px-7">
           <div className="flex items-center gap-4">
@@ -1170,7 +1205,7 @@ export default function BitcoinEntryChart() {
         })}
 
         <section className="flex flex-col gap-4 bg-[#080b11] px-5 py-5 lg:px-7">
-          <div className="relative aspect-[1200/461] max-h-[520px] min-h-[240px] w-full overflow-hidden rounded-2xl border border-[#1a2432] bg-[#0a0e15] shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
+          <div className="relative aspect-[1200/567] max-h-[600px] min-h-[280px] w-full overflow-hidden rounded-2xl border border-[#1a2432] bg-[#0a0e15] shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
             <div className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] [background-size:40px_40px]" />
             <div className="pointer-events-none absolute left-4 top-4 z-10 flex flex-wrap items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em]">
               <span className="rounded-full border border-[#28394b] bg-[#0a1017]/90 px-2.5 py-1 text-zinc-400">가격</span>
@@ -1180,6 +1215,7 @@ export default function BitcoinEntryChart() {
               <span className="rounded-full border border-amber-400/30 bg-amber-300/10 px-2.5 py-1 text-amber-200/90">B 진입</span>
               <span className="rounded-full border border-emerald-400/30 bg-emerald-300/10 px-2.5 py-1 text-emerald-200/90">TP 익절</span>
               <span className="rounded-full border border-rose-400/30 bg-rose-300/10 px-2.5 py-1 text-rose-200/90">SL 손절</span>
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-300/10 px-2.5 py-1 text-emerald-200/90">RSI 다이버전스</span>
             </div>
             {renderEntryPill(liveState, { entry: LIVE_MARKER_COLORS.entry }, "top-4")}
             {loading && candles.length === 0 ? (
@@ -1275,6 +1311,79 @@ export default function BitcoinEntryChart() {
                   )
                 })}
 
+                {/* RSI(14) sub-panel + bullish divergence markers — same "regular bullish
+                    divergence" TradingView's RSI Divergence Indicator plots (price
+                    equal-or-lower low, RSI higher low), drawn as a green connector with a
+                    "Bull" tag at the more recent pivot. */}
+                <g>
+                  <rect
+                    x={chart.padding.left}
+                    y={chart.rsiTop}
+                    width={chart.width - chart.padding.left - chart.padding.right}
+                    height={chart.rsiHeight}
+                    fill="#070a0f"
+                    stroke="#1a2330"
+                  />
+                  {[30, 50, 70].map((level) => {
+                    const y = chart.rsiTop + ((100 - level) / 100) * chart.rsiHeight
+                    return (
+                      <g key={`rsi-ref-${level}`}>
+                        <line
+                          x1={chart.padding.left}
+                          x2={chart.width - chart.padding.right}
+                          y1={y}
+                          y2={y}
+                          stroke="#1a2330"
+                          strokeDasharray={level === 50 ? "2 4" : undefined}
+                          strokeWidth="1"
+                        />
+                        <text x={chart.width - chart.padding.right + 8} y={y + 4} fill="#475569" fontSize="10">
+                          {level}
+                        </text>
+                      </g>
+                    )
+                  })}
+                  <text x={chart.padding.left + 6} y={chart.rsiTop + 14} fill="#64748b" fontSize="11" fontWeight="700">
+                    RSI (14)
+                  </text>
+                  <path
+                    d={rsiSeriesFull
+                      .map((value, index) => {
+                        if (value == null) return null
+                        const x = chart.padding.left + index * chart.candleWidth + chart.candleWidth / 2
+                        const y = chart.rsiTop + ((100 - value) / 100) * chart.rsiHeight
+                        return `${x},${y}`
+                      })
+                      .filter((point): point is string => point !== null)
+                      .map((point, index) => `${index === 0 ? "M" : "L"}${point}`)
+                      .join(" ")}
+                    fill="none"
+                    stroke="#60a5fa"
+                    strokeWidth="1.5"
+                  />
+                  {rsiDivergences.map(({ fromIndex, toIndex, fromRsi, toRsi }) => {
+                    const fromX = chart.padding.left + fromIndex * chart.candleWidth + chart.candleWidth / 2
+                    const toX = chart.padding.left + toIndex * chart.candleWidth + chart.candleWidth / 2
+                    const fromY = chart.rsiTop + ((100 - fromRsi) / 100) * chart.rsiHeight
+                    const toY = chart.rsiTop + ((100 - toRsi) / 100) * chart.rsiHeight
+                    const labelWidth = 30
+                    const labelOverflowsRight = toX + 6 + labelWidth > chart.width - chart.padding.right
+                    const labelX = labelOverflowsRight ? toX - 6 - labelWidth : toX + 6
+
+                    return (
+                      <g key={`div-${fromIndex}-${toIndex}`}>
+                        <line x1={fromX} y1={fromY} x2={toX} y2={toY} stroke="#4ade80" strokeWidth="2" />
+                        <circle cx={fromX} cy={fromY} r="2.5" fill="#4ade80" />
+                        <circle cx={toX} cy={toY} r="2.5" fill="#4ade80" />
+                        <rect x={labelX} y={toY - 8} width={labelWidth} height={16} rx="4" fill="#22c55e" />
+                        <text x={labelX + labelWidth / 2} y={toY + 4} fill="#052e14" fontSize="10" fontWeight="800" textAnchor="middle">
+                          Bull
+                        </text>
+                      </g>
+                    )
+                  })}
+                </g>
+
                 {displaySignals.map((signal, markerIndex) => {
                   const candle = candles[signal.index]
                   const x = chart.padding.left + signal.index * chart.candleWidth + chart.candleWidth / 2
@@ -1297,7 +1406,7 @@ export default function BitcoinEntryChart() {
                           x1={x}
                           x2={x}
                           y1={chart.padding.top}
-                          y2={chart.priceHeight + chart.gap + chart.volumeHeight}
+                          y2={chart.contentBottom}
                           stroke={color}
                           strokeDasharray="8 8"
                           strokeOpacity="0.38"
@@ -1390,7 +1499,7 @@ export default function BitcoinEntryChart() {
                         x1={x}
                         x2={x}
                         y1={chart.padding.top}
-                        y2={chart.priceHeight + chart.gap + chart.volumeHeight}
+                        y2={chart.contentBottom}
                         stroke="#94a3b8"
                         strokeWidth="1"
                         strokeDasharray="3 4"
@@ -1530,10 +1639,7 @@ export default function BitcoinEntryChart() {
         </section>
 
         <section className="border-t border-[#1a2432] bg-[#080b11] px-5 py-5">
-          <div className="mx-auto w-full max-w-[640px]">
-            <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
-          </div>
-          <div className="mx-auto mt-4 w-full max-w-[300px]">
+          <div className="mx-auto w-full max-w-[300px]">
             <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
           </div>
         </section>
