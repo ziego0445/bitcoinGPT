@@ -98,9 +98,30 @@ function persistState(state, changed) {
     execFileSync("git", ["push", "origin", "HEAD:main"], GIT_OPTS);
     log(pushRetryNeeded ? "Retried a previously failed push — succeeded." : "Committed and pushed live-trade state.");
     pushRetryNeeded = false;
+    // Fire-and-forget: purgeJsDelivrCache() handles its own errors and persistState()
+    // stays synchronous, matching its existing call sites (neither awaits it).
+    purgeJsDelivrCache();
   } catch (error) {
     pushRetryNeeded = true;
     log("WARN: git commit/push failed, will retry next tick. Data is safe on disk either way.", error.message);
+  }
+}
+
+// The dashboard reads data/live-trades.json through jsDelivr's GitHub CDN mirror, not
+// raw.githubusercontent.com directly — GitHub's raw-content endpoint anti-scraping limits
+// were 429-ing real site visitors. jsDelivr caches its GitHub mirror rather than fetching
+// on every request, so without this the dashboard would show stale state until jsDelivr's
+// own cache window elapsed. Best-effort like notify(): a purge failure must never block or
+// crash the trading loop — the next successful purge (or jsDelivr's normal cache expiry)
+// catches it up.
+const JSDELIVR_PURGE_URL = "https://purge.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades.json";
+
+async function purgeJsDelivrCache() {
+  try {
+    const response = await fetch(JSDELIVR_PURGE_URL);
+    if (!response.ok) throw new Error(`purge.jsdelivr.net ${response.status}`);
+  } catch (error) {
+    log("WARN: jsDelivr cache purge failed (dashboard may show stale state briefly):", error.message);
   }
 }
 

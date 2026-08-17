@@ -89,8 +89,15 @@ const ALERT_MIN_SCORE = 85
 const LEVERAGE = 10
 // Written by scripts/live-trade.js, which runs on a local always-on PC (not GitHub
 // Actions) and places real Bitget orders — see that file for details.
-const LIVE_TRADE_STATE_URL =
-  "https://raw.githubusercontent.com/ziego0445/bitcoinGPT/main/data/live-trades.json"
+//
+// Fetched from jsDelivr's GitHub CDN mirror, not raw.githubusercontent.com directly —
+// raw.githubusercontent.com anti-scraping rate limits return a hard 429 for real visitors
+// (confirmed in the browser, not just from a datacenter IP), which left this panel stuck
+// on "불러오는 중" forever. jsDelivr fronts the same file with a CDN built for exactly this
+// polling pattern; scripts/live-trade.js calls jsDelivr's purge API right after each push
+// (see purgeJsDelivrCache() there) so the CDN copy stays close to real-time instead of
+// waiting out its normal cache window.
+const LIVE_TRADE_STATE_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades.json"
 const LIVE_MARKER_COLORS = { entry: "#fbbf24", win: "#4ade80", loss: "#f43f5e" }
 
 function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
