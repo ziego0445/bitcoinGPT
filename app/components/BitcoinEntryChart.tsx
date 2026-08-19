@@ -98,7 +98,7 @@ const LEVERAGE = 10
 // (see purgeJsDelivrCache() there) so the CDN copy stays close to real-time instead of
 // waiting out its normal cache window.
 const LIVE_TRADE_STATE_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades.json"
-const LIVE_MARKER_COLORS = { entry: "#fbbf24", win: "#4ade80", loss: "#f43f5e" }
+const LIVE_MARKER_COLORS = { entry: "#ef4444", win: "#4ade80", loss: "#f43f5e" }
 
 function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
   return (
