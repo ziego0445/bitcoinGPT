@@ -36,14 +36,13 @@ async function notify(text) {
 const LEVERAGE = 10;
 const TAKE_PROFIT_PCT = 0.08; // +8% on account equity (= +0.8% price move at 10x)
 const STOP_LOSS_PCT = 0.08;
-// Two live key-candle losses (2026-08-22, 2026-08-26) both got 62-99% of the way to the
-// +8% TP before fully reversing into the -8% SL — the exchange-side TP/SL never moves
-// once placed, so a trade that was solidly in profit has no protection on the way back
-// down. Once unrealized P&L (as a fraction of margin) reaches half the TP distance, arm a
-// bot-side breakeven exit: if price then falls back to the entry price, close immediately
-// instead of riding it down to the full stop. Reuses the same reduceOnly placeOrder() path
-// as every other order here rather than an unverified "modify the exchange trigger" call.
-const BREAKEVEN_ARM_PCT = 0.04;
+// A bot-side breakeven-close (arm once unrealized P&L crossed +4% of margin, then close
+// immediately if price fell back to entry) was tried and rolled back — a 150-day/15m
+// backtest across every arm threshold from +2% to +7% showed it *always* underperforms not
+// having it at all (best case +7%: 79.98 vs 84.27 final equity on the same signal set).
+// This strategy's winners often dip after entry and take hours to recover to the full +8%
+// TP; cutting them off at breakeven sacrifices more of those eventual wins than it saves
+// from full losses. Do not re-add without new backtest evidence it helps.
 const ALERT_MIN_SCORE = 85;
 // Structural stop-loss: place SL just under the price level the pattern's own thesis
 // depends on (detectSignals()'s structureLevel — the double-bottom's reference pivot low,
@@ -169,7 +168,6 @@ function adoptUntrackedPosition(state, position) {
     takeProfit: position.openPriceAvg * (1 + TAKE_PROFIT_PCT / LEVERAGE),
     stopLoss: position.openPriceAvg * (1 - STOP_LOSS_PCT / LEVERAGE),
     orderId: null,
-    breakevenArmed: false,
   };
 }
 
@@ -185,17 +183,15 @@ function adoptUntrackedPosition(state, position) {
 // actually matches on this account. Left in as a harmless no-op in case Bitget ever
 // returns that value for a different order type; `reduceOnly === "YES"` and
 // `side === "sell"` are the fallbacks that actually do the work here.
-// Returns the live position (or null) so tick() can reuse it for the breakeven check
-// below without a second getSinglePosition() call.
 async function reconcilePosition(config, state) {
   const position = await bitget.getSinglePosition(config);
 
   if (position && !state.openPosition) {
     adoptUntrackedPosition(state, position);
-    return position;
+    return;
   }
-  if (position) return position; // still open and already tracked — nothing to reconcile
-  if (!state.openPosition) return null; // idle tick, no position on either side
+  if (position) return; // still open and already tracked — nothing to reconcile
+  if (!state.openPosition) return; // idle tick, no position on either side
 
   const opened = state.openPosition;
   // A small negative buffer covers clock skew between this process and Bitget's server —
@@ -256,7 +252,6 @@ async function reconcilePosition(config, state) {
   state.currentBalance = account.equity;
   state.openPosition = null;
   log(`Position closed: ${exitReason} @ ${exitPrice} (pnl ${pnlPct.toFixed(2)}%)`);
-  return null;
 }
 
 // BITGET_MARGIN_USDT unset/"full" (config.marginUsdt === null) means "use whatever the
@@ -287,6 +282,12 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
   const latestCandle = closedCandles[closedCandles.length - 1];
   if (!latest || !latestCandle || latest.index !== closedCandles.length - 1) return; // no signal on the freshest closed candle
   if (latest.direction !== "LONG" || latest.score < ALERT_MIN_SCORE) return;
+  // key-candle disabled: a 150-day/15m backtest showed it net-losing at every score
+  // threshold tried (78-94), even with the structural stop-loss above — double-bottom
+  // alone was roughly breakeven over the same window. Still detected/shown on the
+  // dashboard's signal timeline for visibility, just never traded live. Revisit if the
+  // pattern gets reworked (e.g. an RSI or trend filter, like double-bottom already has).
+  if (latest.pattern === "key-candle") return;
 
   const watermark = resumeWatermark(state);
   if (watermark != null && latestCandle.time <= watermark) return; // already acted on this candle (or an earlier one)
@@ -342,7 +343,6 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
     takeProfit,
     stopLoss,
     orderId: order.orderId,
-    breakevenArmed: false,
   };
 
   log(`Entered LONG @ ${entryPrice} (orderId ${order.orderId}), TP ${takeProfit.toFixed(1)} / SL ${stopLoss.toFixed(1)}`);
@@ -355,87 +355,6 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
       `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x`,
       `TP: $${takeProfit.toFixed(1)} · SL: $${stopLoss.toFixed(1)}`,
       `시간: ${new Date(entryTime).toLocaleString("ko-KR")}`,
-    ].join("\n"),
-  );
-}
-
-// Bot-side breakeven protection (see BREAKEVEN_ARM_PCT above). `position` is whatever
-// reconcilePosition() just read this tick — passed in rather than re-fetched so arming
-// and firing both see the same snapshot. Two steps, both idempotent across ticks:
-//   1. Once unrealized P&L crosses +BREAKEVEN_ARM_PCT of margin, flip breakevenArmed and
-//      stop — the exchange's own preset TP/SL still govern from here.
-//   2. On a later tick, once armed AND unrealized P&L has fallen back to <=0, close the
-//      full position immediately with a reduceOnly market sell instead of letting it ride
-//      down toward the full -STOP_LOSS_PCT.
-// Reaction time is bounded by POLL_INTERVAL_MS (30s) — a move that blows through entry
-// price between ticks is still caught by the exchange's real preset SL as the backstop.
-async function maybeCloseAtBreakeven(config, state, position) {
-  const opened = state.openPosition;
-  if (!opened || !position || position.marginSize <= 0) return;
-
-  const unrealizedPct = position.unrealizedPL / position.marginSize;
-
-  if (!opened.breakevenArmed) {
-    if (unrealizedPct >= BREAKEVEN_ARM_PCT) {
-      opened.breakevenArmed = true;
-      log(`Breakeven armed at +${(unrealizedPct * 100).toFixed(2)}% unrealized — will close early if price returns to entry.`);
-      await notify(`포지션이 +${(unrealizedPct * 100).toFixed(1)}%까지 도달해 본전 방어 모드로 전환했습니다. 진입가 아래로 내려오면 즉시 청산합니다.`);
-    }
-    return;
-  }
-
-  if (unrealizedPct > 0) return; // armed, but still above breakeven — nothing to do yet
-
-  log(`Breakeven stop triggered (unrealized ${(unrealizedPct * 100).toFixed(2)}%) — closing position early.`);
-
-  const order = await bitget.placeOrder(config, {
-    side: "sell",
-    size: String(position.total), // matches roundSize()'s string return elsewhere — Bitget expects size as a string
-    reduceOnly: true,
-    clientOid: `breakeven-${Date.now()}`,
-  });
-
-  // Give the market order a moment to fill before reading back the real exit price.
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  const detail = await bitget.getOrderDetail(config, { orderId: order.orderId }).catch(() => null);
-  const exitPrice = (detail && Number(detail.priceAvg || detail.price)) || position.openPriceAvg;
-  const exitTime = (detail && Number(detail.uTime ?? detail.cTime)) || Date.now();
-
-  const account = await bitget.getAccount(config);
-  const priceMovePct = (exitPrice - opened.entryPrice) / opened.entryPrice;
-  const pnlPct = priceMovePct * opened.leverage * 100;
-
-  state.trades.push({
-    pattern: opened.pattern,
-    score: opened.score,
-    leverage: opened.leverage,
-    entryTime: opened.entryTime,
-    entryPrice: opened.entryPrice,
-    exitTime,
-    exitPrice,
-    // Reuses the dashboard's existing take-profit/stop-loss categories (no new enum value
-    // to plumb through the frontend) — a breakeven close that nets non-negative after fees
-    // genuinely is a (tiny) take-profit, and one that nets slightly negative genuinely is a
-    // (tiny) stop-loss. Either way it's far smaller than a full ±STOP_LOSS_PCT swing.
-    exitReason: pnlPct >= 0 ? "take-profit" : "stop-loss",
-    pnlPct,
-    balanceBefore: state.currentBalance,
-    balanceAfter: account.equity,
-    orderId: opened.orderId,
-    exitOrderId: order.orderId,
-  });
-
-  state.currentBalance = account.equity;
-  state.openPosition = null;
-
-  log(`Position closed at breakeven: ${exitPrice} (pnl ${pnlPct.toFixed(2)}%)`);
-  await notify(
-    [
-      "본전 방어 청산",
-      `패턴: ${signalTitle(opened.pattern)}`,
-      `진입가: $${opened.entryPrice.toLocaleString()}`,
-      `청산가: $${exitPrice.toLocaleString()}`,
-      `손익: ${pnlPct.toFixed(2)}%`,
     ].join("\n"),
   );
 }
@@ -455,14 +374,10 @@ async function tick(config, state) {
   const closedCandles = candles.slice(0, -1); // last candle is still forming
   const events = detectSignals(closedCandles);
 
-  const position = await reconcilePosition(config, state);
+  await reconcilePosition(config, state);
 
   if (!contractConfigCache) {
     contractConfigCache = await bitget.getContractConfig(config);
-  }
-
-  if (state.openPosition) {
-    await maybeCloseAtBreakeven(config, state, position);
   }
 
   if (!state.openPosition) {
