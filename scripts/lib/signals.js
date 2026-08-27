@@ -215,7 +215,12 @@ function detectSignals(candles) {
     const retestVolumeOk = previousPivot
       ? current.volume <= previousPivot.volume * 1.15 && volumeSpike <= 1.6
       : false;
-    const wickOk = lowerWickRatio(current) >= 0.34;
+    // Lowered from 0.34 after a 150-day/15m backtest split into two 100/50-day halves:
+    // 0.34 required a strong lower wick that, combined with the RSI divergence check
+    // above, ended up screening out a lot of otherwise-valid retests. 0.2 improved final
+    // equity in BOTH halves independently (not just one) — a tighter rsiOversold cutoff
+    // looked better in-sample alone but reversed out-of-sample, so that one was left as-is.
+    const wickOk = lowerWickRatio(current) >= 0.2;
 
     if ((firstCandleDominates && steppedDecline) || highSellVolumeIntoRetest) {
       signals.push({

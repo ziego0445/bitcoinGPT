@@ -314,7 +314,9 @@ function detectSignals(candles: Candle[]): EntrySignal[] {
     const retestVolumeOk = previousPivot
       ? current.volume <= previousPivot.volume * 1.15 && volumeSpike <= 1.6
       : false
-    const wickOk = lowerWickRatio(current) >= 0.34
+    // Lowered from 0.34 — see the matching comment in scripts/lib/signals.js (150-day
+    // backtest, improved both halves of an in-sample/out-of-sample split independently).
+    const wickOk = lowerWickRatio(current) >= 0.2
 
     if ((firstCandleDominates && steppedDecline) || highSellVolumeIntoRetest) {
       signals.push({
