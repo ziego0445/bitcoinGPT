@@ -263,6 +263,10 @@ function detectSignals(candles) {
         ),
         pattern: "key-candle",
         detail: "장대 음봉+거래량 폭발 후 도지/양봉 컨펌, 다음 봉 아래꼬리로 지지 재확인.",
+        // The key candle's low is this setup's own thesis: if price ever trades back below
+        // it, the "capitulation" this pattern is betting on didn't hold. Callers use this
+        // for a structural stop-loss instead of an arbitrary fixed distance.
+        structureLevel: keyCandle.low,
       });
       continue;
     }
@@ -281,6 +285,9 @@ function detectSignals(candles) {
         score: clamp(66 + (bullishDivergence ? 10 : 0) + (wickOk ? 6 : 0) + (supportNearby ? 5 : 0), 66, 92),
         pattern: "double-bottom",
         detail: "직전 저점 부근 재방문. 거래량이 과하지 않고 꼬리/다이버전스가 붙은 쌍바닥 후보.",
+        // The reference pivot low this retest is measured against — the "double bottom"
+        // thesis is that this level holds again. See structureLevel note on key-candle above.
+        structureLevel: previousPivot.price,
       });
     }
   }
