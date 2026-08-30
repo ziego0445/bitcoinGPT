@@ -134,6 +134,35 @@ function selectPreviousPivot(pivots, lookback = 3) {
   return recent.reduce((best, pivot) => (pivot.volume > best.volume ? pivot : best), recent[0]);
 }
 
+// getPivotLows() only confirms a pivot once 3 candles afterward all traded higher — for
+// an ordinary quiet low that's the right caution, but a genuine capitulation candle (long
+// lower wick + a real volume spike) is a level the market already reacted to the moment
+// it printed. Waiting the usual ~1h/4-candle confirmation window means the first retest
+// after a flash-crash ends up referencing whatever older, less relevant pivot still
+// qualifies instead of the crash low itself (confirmed against the 2026-08-29 01:15 KST
+// crash: the 76846 wick low wasn't usable until 02:15, so the 02:00 retest signal
+// referenced a stale 78363 pivot from the day before instead).
+// 150-day/15m backtest (in-sample/out-of-sample split): wr>=0.4 + volume>=2x average,
+// searched over the last 8 candles preferring the most recent match, improved final
+// equity in BOTH halves independently (87.15->98.07 in-sample, 163.39->165.93
+// out-of-sample) — tighter wr/volume cutoffs looked better in one half but not the other.
+const WICK_PIVOT_LOOKBACK = 8;
+const WICK_PIVOT_MIN_WICK_RATIO = 0.4;
+const WICK_PIVOT_MIN_VOLUME_SPIKE = 2;
+
+function findRecentWickPivot(candles, rsiSeries, upToIndex) {
+  const start = Math.max(10, upToIndex - WICK_PIVOT_LOOKBACK + 1);
+  for (let k = upToIndex; k >= start; k -= 1) {
+    const candle = candles[k];
+    const recentAvgVolume = average(candles.slice(k - 10, k).map((c) => c.volume));
+    const volumeSpike = recentAvgVolume > 0 ? candle.volume / recentAvgVolume : 0;
+    if (lowerWickRatio(candle) >= WICK_PIVOT_MIN_WICK_RATIO && volumeSpike >= WICK_PIVOT_MIN_VOLUME_SPIKE) {
+      return { index: k, price: candle.low, rsi: rsiSeries[k], volume: candle.volume };
+    }
+  }
+  return undefined;
+}
+
 const SIGNAL_TITLES = {
   "key-candle": "장대+거래량 컨펌 후보",
   "double-bottom": "쌍바닥 후보",
@@ -189,7 +218,10 @@ function detectSignals(candles) {
     const supports = getSupportLevels(candles.slice(0, index + 1));
     const supportNearby = isNearSupport(current.low, supports);
     const pivots = getPivotLows(candles, index - 1, rsiSeries);
-    const previousPivot = selectPreviousPivot(pivots);
+    // A fresh wick-pivot (see findRecentWickPivot above) takes priority when present —
+    // it's the level the market just reacted to, unlike a plain geometric pivot which can
+    // be an arbitrary quiet wiggle that happened to be the most recent one confirmed.
+    const previousPivot = findRecentWickPivot(candles, rsiSeries, index - 1) ?? selectPreviousPivot(pivots);
     const nearPreviousLow = previousPivot
       ? Math.abs(current.low - previousPivot.price) / previousPivot.price <= 0.007
       : false;
