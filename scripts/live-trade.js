@@ -19,7 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { detectSignals, signalTitle, clamp } = require("./lib/signals");
+const { detectSignals, signalTitle } = require("./lib/signals");
 const bitget = require("./lib/bitget-client");
 const { sendTelegram } = require("./lib/telegram");
 
@@ -44,16 +44,15 @@ const STOP_LOSS_PCT = 0.08;
 // TP; cutting them off at breakeven sacrifices more of those eventual wins than it saves
 // from full losses. Do not re-add without new backtest evidence it helps.
 const ALERT_MIN_SCORE = 85;
-// Structural stop-loss: place SL just under the price level the pattern's own thesis
-// depends on (detectSignals()'s structureLevel — the double-bottom's reference pivot low,
-// or the key-candle's low) instead of an arbitrary fixed distance. If that level actually
-// breaks, the setup itself was wrong, which is a cleaner invalidation than "price moved
-// X%". Clamped to [MIN,MAX] price-move-% (centered on the old fixed STOP_LOSS_PCT
-// distance) so an unusually close reference level can't produce a stop tight enough for
-// ordinary noise to clip it, and an unusually far one can't blow past intended risk.
-const STRUCTURE_STOP_BUFFER_PCT = 0.003; // 0.3% below the reference level itself
-const MIN_STOP_MOVE_PCT = (STOP_LOSS_PCT / LEVERAGE) / 2; // 0.4% price move = 4% equity
-const MAX_STOP_MOVE_PCT = (STOP_LOSS_PCT / LEVERAGE) * 1.5; // 1.2% price move = 12% equity
+// Structural stop-loss (SL just under the pattern's own reference level, e.g.
+// detectSignals()'s structureLevel) was tried and rolled back. It backtested well in
+// isolation, but after findRecentWickPivot() (signals.js) started letting a just-formed
+// capitulation wick act as that reference immediately, the reference level is often very
+// close to entry — the clamp's floor then made stops tight enough that a 150-day/15m
+// backtest showed a flat fixed ±STOP_LOSS_PCT beating every clamp width tried (222.01
+// final equity vs the best structural variant's 209.12, both halves of an in/out split).
+// structureLevel is still computed and carried on signals for potential future use —
+// only the stop-loss formula itself reverted.
 // The PDF strategy this bot follows is written by/for a 15m-primary trader (explicitly
 // warns against fast 5m entries for at least one pattern) — matches the dashboard's own
 // default timeframe. detectSignals()'s conditions are relative-to-recent-average, not
@@ -265,16 +264,6 @@ async function resolveMarginUsdt(config) {
   return Math.max(account.available * 0.95, 0);
 }
 
-// See STRUCTURE_STOP_BUFFER_PCT/MIN_STOP_MOVE_PCT/MAX_STOP_MOVE_PCT above. Falls back to
-// the old fixed distance if a signal doesn't carry a structureLevel (defensive — every
-// current LONG pattern sets one, but a future pattern might not).
-function computeStopLoss(price, structureLevel) {
-  if (structureLevel == null) return price * (1 - STOP_LOSS_PCT / LEVERAGE);
-  const structuralPrice = structureLevel * (1 - STRUCTURE_STOP_BUFFER_PCT);
-  const movePct = clamp((price - structuralPrice) / price, MIN_STOP_MOVE_PCT, MAX_STOP_MOVE_PCT);
-  return price * (1 - movePct);
-}
-
 async function maybeEnter(config, contract, state, closedCandles, events) {
   if (state.openPosition) return;
 
@@ -300,7 +289,7 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
 
   const price = latestCandle.close;
   const takeProfit = price * (1 + TAKE_PROFIT_PCT / LEVERAGE);
-  const stopLoss = computeStopLoss(price, latest.structureLevel);
+  const stopLoss = price * (1 - STOP_LOSS_PCT / LEVERAGE);
   const size = bitget.roundSize((marginUsdt * LEVERAGE) / price, contract);
 
   // roundSize() always rounds UP to the contract's minimum, even when the resolved
