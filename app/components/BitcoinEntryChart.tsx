@@ -728,6 +728,39 @@ export default function BitcoinEntryChart() {
     const pivotsForSelection = getPivotLows(closedCandles, upToIndex, rsiSeriesFull)
     return selectPreviousPivot(pivotsForSelection) ?? null
   }, [closedCandles, rsiSeriesFull])
+  // The signal timeline below only shows candles that fully qualified (score>=85, or
+  // avoid) — on 15m that can sit empty for many hours even when nothing is wrong, which
+  // reads as "the panel is broken" rather than "the market just isn't offering a retest
+  // right now". This evaluates the live double-bottom pattern's own AND conditions
+  // (mirrors detectSignals()) against the freshest closed candle every tick, regardless of
+  // whether they all pass, so it's visible which specific condition is (or isn't) met.
+  const doubleBottomCheck = useMemo(() => {
+    if (closedCandles.length < 17) return null
+    const index = closedCandles.length - 1
+    const current = closedCandles[index]
+    const recent = closedCandles.slice(index - 10, index)
+    const avgVolume = average(recent.map((c) => c.volume))
+    const volumeSpike = avgVolume > 0 ? current.volume / avgVolume : 0
+    const rsi = rsiSeriesFull[index] ?? null
+    const previousPivot = activePreviousPivot
+    const nearPreviousLow = previousPivot ? Math.abs(current.low - previousPivot.price) / previousPivot.price <= 0.007 : false
+    const slightlyBroken = previousPivot
+      ? current.low < previousPivot.price && (previousPivot.price - current.low) / previousPivot.price <= 0.012
+      : false
+    return {
+      time: current.time,
+      previousPivot,
+      retested: nearPreviousLow || slightlyBroken,
+      retestVolumeOk: previousPivot ? current.volume <= previousPivot.volume * 1.15 && volumeSpike <= 1.6 : false,
+      wickOk: lowerWickRatio(current) >= 0.2,
+      bullishDivergence:
+        previousPivot != null && previousPivot.rsi != null && rsi != null && current.low <= previousPivot.price * 1.004 && rsi > previousPivot.rsi,
+      rsiOversold: rsi != null && rsi <= 40,
+      rsi,
+      volumeSpike,
+      currentLow: current.low,
+    }
+  }, [closedCandles, rsiSeriesFull, activePreviousPivot])
   // Same "regular bullish divergence" definition as detectSignals()'s bullishDivergence:
   // price prints an equal-or-lower low while RSI(14) prints a higher low there — but drawn
   // between every consecutive pivot-low pair (not just against the current candle), so the
@@ -1680,6 +1713,76 @@ export default function BitcoinEntryChart() {
           )}
 
         <section className="border-t border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
+          <div className="mb-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Live check</p>
+            <h2 className="mt-1 text-base font-semibold text-zinc-50">지금 이 순간 진입 조건 (15분봉 기준, double-bottom)</h2>
+          </div>
+          {timeframe !== "15m" ? (
+            <div className="mb-6 rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-xs text-zinc-500">
+              실제 봇은 15분봉 기준으로만 판단합니다 — 위 타임프레임 선택을 15분으로 바꾸면 지금 조건 체크리스트가 나옵니다
+              (다른 타임프레임 데이터로 계산하면 실제 봇 판단과 안 맞을 수 있어 일부러 숨겼습니다).
+            </div>
+          ) : doubleBottomCheck ? (
+            <div className="mb-6 rounded-xl border border-[#263545] bg-[#080d13] p-4">
+              <p className="mb-3 text-xs text-zinc-500">
+                기준 캔들: {formatDateTime(doubleBottomCheck.time)} · 실제 매매 봇도 이 6개 조건을 전부(AND) 만족해야 진입합니다 —
+                일부만 충족된 상태가 이어지는 건 정상이고, 대시보드 새로고침 없이도 30초마다 갱신됩니다.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {[
+                  {
+                    ok: doubleBottomCheck.previousPivot != null,
+                    label: "기준 저점 존재",
+                    detail: doubleBottomCheck.previousPivot ? `${formatPrice(doubleBottomCheck.previousPivot.price)}` : "최근 확정 피벗/급락 캔들 없음",
+                  },
+                  {
+                    ok: doubleBottomCheck.retested,
+                    label: "저점 재방문",
+                    detail: doubleBottomCheck.previousPivot
+                      ? `현재 저가 ${formatPrice(doubleBottomCheck.currentLow)} (${(((doubleBottomCheck.currentLow - doubleBottomCheck.previousPivot.price) / doubleBottomCheck.previousPivot.price) * 100).toFixed(2)}%)`
+                      : "기준 저점 없음",
+                  },
+                  {
+                    ok: doubleBottomCheck.retestVolumeOk,
+                    label: "재하락 거래량 억제",
+                    detail: `평균 대비 ${doubleBottomCheck.volumeSpike.toFixed(2)}배 (≤1.6배 필요)`,
+                  },
+                  {
+                    ok: doubleBottomCheck.wickOk,
+                    label: "아래꼬리 확인",
+                    detail: "비율 ≥ 20%",
+                  },
+                  {
+                    ok: doubleBottomCheck.bullishDivergence,
+                    label: "RSI 강세 다이버전스",
+                    detail:
+                      doubleBottomCheck.rsi != null && doubleBottomCheck.previousPivot?.rsi != null
+                        ? `현재 RSI ${doubleBottomCheck.rsi.toFixed(1)} vs 기준 저점 RSI ${doubleBottomCheck.previousPivot.rsi.toFixed(1)}`
+                        : "비교 불가",
+                  },
+                  {
+                    ok: doubleBottomCheck.rsiOversold,
+                    label: "RSI 과매도",
+                    detail: doubleBottomCheck.rsi != null ? `RSI(14) ${doubleBottomCheck.rsi.toFixed(1)} (≤40 필요)` : "-",
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.label}
+                    className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
+                      item.ok ? "border-emerald-400/30 bg-emerald-300/5" : "border-[#263545] bg-[#0a0f16]"
+                    }`}
+                  >
+                    <span className={`mt-0.5 font-bold ${item.ok ? "text-emerald-400" : "text-zinc-600"}`}>{item.ok ? "✓" : "✗"}</span>
+                    <div>
+                      <p className={item.ok ? "text-emerald-200" : "text-zinc-400"}>{item.label}</p>
+                      <p className="mt-0.5 text-zinc-500">{item.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <div className="mb-4 flex items-end justify-between gap-4">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Signal timeline</p>
@@ -1688,7 +1791,7 @@ export default function BitcoinEntryChart() {
             <div className="hidden items-center gap-2 text-xs text-zinc-500 md:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />30초마다 시세 갱신</div>
           </div>
           <p className="mb-4 text-xs text-zinc-500">
-            이 카드들은 지금 선택한 {timeframe} 기준의 참고용 후보 신호입니다. 실제 매매 봇은 5분봉 기준으로 자동 진입하므로 진입 시점이 다를 수 있습니다 — 실제 진입가/손익은 차트의 B/TP/SL 가로줄과 상단 배지를 확인하세요.
+            이 카드들은 지금 선택한 {timeframe} 기준의 참고용 후보 신호입니다. 실제 매매 봇은 15분봉 기준으로 자동 진입하므로 다른 타임프레임을 보고 있으면 진입 시점이 다를 수 있습니다 — 실제 진입가/손익은 차트의 B/TP/SL 가로줄과 상단 배지를 확인하세요.
           </p>
 
           <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
