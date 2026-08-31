@@ -712,6 +712,19 @@ export default function BitcoinEntryChart() {
     () => (candles.length ? getPivotLows(candles, candles.length - 1, rsiSeriesFull) : []),
     [candles, rsiSeriesFull],
   )
+  // Of all the confirmed pivots above, which ONE would actually back a double-bottom
+  // entry evaluated on the freshest closed candle right now — mirrors detectSignals()'s
+  // own reference-selection exactly (findRecentWickPivot() takes priority, else the
+  // highest-volume pivot among the last 3). Everything else is "history" the strategy no
+  // longer references, even though it's still drawn on the chart.
+  const activePreviousPivot = useMemo(() => {
+    if (closedCandles.length < 2) return null
+    const upToIndex = closedCandles.length - 2
+    const wickPivot = findRecentWickPivot(closedCandles, rsiSeriesFull, upToIndex)
+    if (wickPivot) return wickPivot
+    const pivotsForSelection = getPivotLows(closedCandles, upToIndex, rsiSeriesFull)
+    return selectPreviousPivot(pivotsForSelection) ?? null
+  }, [closedCandles, rsiSeriesFull])
   // Same "regular bullish divergence" definition as detectSignals()'s bullishDivergence:
   // price prints an equal-or-lower low while RSI(14) prints a higher low there — but drawn
   // between every consecutive pivot-low pair (not just against the current candle), so the
@@ -1353,13 +1366,41 @@ export default function BitcoinEntryChart() {
                 {/* Confirmed pivot lows (getPivotLows()'s output, already computed above for
                     the RSI divergence markers) — the same reference points double-bottom
                     entries retest, drawn on the price panel so it's visible which lows the
-                    strategy actually considers "remembered" support, not just any dip. */}
-                {rsiPivots.map((pivot) => {
+                    strategy actually considers "remembered" support, not just any dip.
+                    The one currently backing a live entry decision (activePreviousPivot)
+                    is highlighted — everything else is history the strategy has already
+                    moved past, even though it's still shown for context. A fresh
+                    wick-pivot can be the active one without ever appearing in rsiPivots
+                    (it skips the usual 3-candle confirmation), so it's added separately
+                    when that's the case. */}
+                {[
+                  ...rsiPivots.map((pivot) => ({
+                    index: pivot.index,
+                    price: pivot.price,
+                    active: activePreviousPivot?.index === pivot.index,
+                  })),
+                  ...(activePreviousPivot && !rsiPivots.some((p) => p.index === activePreviousPivot.index)
+                    ? [{ index: activePreviousPivot.index, price: activePreviousPivot.price, active: true }]
+                    : []),
+                ].map((pivot) => {
                   const x = chart.padding.left + pivot.index * chart.candleWidth + chart.candleWidth / 2
                   const y = chart.padding.top + priceY(pivot.price, chart.min, chart.max, chart.priceHeight)
-                  return (
-                    <circle key={`pivot-${pivot.index}`} cx={x} cy={y + 9} r="3" fill="#0b1118" stroke="#22d3ee" strokeWidth="1.5">
-                      <title>{`확정 피벗 ${formatPrice(pivot.price)}`}</title>
+                  return pivot.active ? (
+                    <circle
+                      key={`pivot-${pivot.index}`}
+                      cx={x}
+                      cy={y + 9}
+                      r="4.5"
+                      fill="#0b1118"
+                      stroke="#facc15"
+                      strokeWidth="2"
+                      filter="url(#signalGlow)"
+                    >
+                      <title>{`현재 활성 기준 피벗 ${formatPrice(pivot.price)}`}</title>
+                    </circle>
+                  ) : (
+                    <circle key={`pivot-${pivot.index}`} cx={x} cy={y + 9} r="3" fill="#0b1118" stroke="#22d3ee" strokeOpacity="0.4" strokeWidth="1.5">
+                      <title>{`이전 피벗(비활성) ${formatPrice(pivot.price)}`}</title>
                     </circle>
                   )
                 })}
