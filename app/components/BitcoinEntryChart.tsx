@@ -101,8 +101,11 @@ const LIVE_TRADE_STATE_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@m
 // exit is deliberately its own color, not reused from win/loss — the closed-trade "S"
 // (청산) marker used to just borrow the TP/SL line color, making it hard to tell apart
 // from those reference lines at a glance. The TP/SL text label inside it still tells you
-// which outcome it was.
-const LIVE_MARKER_COLORS = { entry: "#ef4444", win: "#4ade80", loss: "#f43f5e", exit: "#a78bfa" }
+// which outcome it was. entry was red before, but that reads almost the same as a bearish
+// (red) candle body/wick right under it — pink stands out against both candle colors and
+// doesn't collide with any other marker hue (TP green, SL rose, exit violet, active pivot
+// amber, inactive pivot cyan).
+const LIVE_MARKER_COLORS = { entry: "#f472b6", win: "#4ade80", loss: "#f43f5e", exit: "#a78bfa" }
 
 function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
   return (
@@ -973,7 +976,10 @@ export default function BitcoinEntryChart() {
           <>
             {/* Entry price gets the same full-width reference line as TP/SL so it's
                 readable at a glance regardless of where the entry candle has scrolled to
-                — the candle-anchored B marker below still pins down the exact candle. */}
+                — the candle-anchored B marker below still pins down the exact candle. The
+                margin label text is skipped when that candle marker is close enough to the
+                right edge to sit right on top of it (redundant anyway — the entry price is
+                also shown in the entry pill and the stat tiles above the chart). */}
             {openPosition.entryPrice >= chart.min && openPosition.entryPrice <= chart.max && (
               <g>
                 <line
@@ -986,9 +992,11 @@ export default function BitcoinEntryChart() {
                   strokeWidth="1.4"
                   strokeOpacity="0.85"
                 />
-                <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.entryPrice) + 4} fill={colors.entry} fontSize="11" fontWeight="800">
-                  B {formatPrice(openPosition.entryPrice)}
-                </text>
+                {(openEntryIndex < 0 || xAt(openEntryIndex) < chart.width - chart.padding.right - 90) && (
+                  <text x={chart.width - chart.padding.right + 8} y={yAt(openPosition.entryPrice) + 4} fill={colors.entry} fontSize="11" fontWeight="800">
+                    B {formatPrice(openPosition.entryPrice)}
+                  </text>
+                )}
               </g>
             )}
             {openPosition.takeProfit >= chart.min && openPosition.takeProfit <= chart.max && (
@@ -1525,7 +1533,11 @@ export default function BitcoinEntryChart() {
                   const boxWidth = 290
                   const boxHeight = 118
                   const boxX = markerX < chart.width * 0.58 ? markerX + 42 : markerX - boxWidth - 42
-                  const boxY = clamp(markerY - 62, 24, chart.priceHeight - boxHeight - 12)
+                  // Lower bound was 24 — too close to the top-left legend chips and the
+                  // entry pill (both HTML overlays anchored at the very top), so a signal
+                  // near the top of the visible price range could render its detail box
+                  // right underneath them. 56 keeps clear of both.
+                  const boxY = clamp(markerY - 62, 56, chart.priceHeight - boxHeight - 12)
                   const color = selectedSignal.direction === "LONG" ? "#67e8f9" : "#fbbf24"
                   const reasons = signalReasons(selectedSignal)
 
