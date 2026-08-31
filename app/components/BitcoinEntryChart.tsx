@@ -98,7 +98,11 @@ const LEVERAGE = 10
 // (see purgeJsDelivrCache() there) so the CDN copy stays close to real-time instead of
 // waiting out its normal cache window.
 const LIVE_TRADE_STATE_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades.json"
-const LIVE_MARKER_COLORS = { entry: "#ef4444", win: "#4ade80", loss: "#f43f5e" }
+// exit is deliberately its own color, not reused from win/loss — the closed-trade "S"
+// (청산) marker used to just borrow the TP/SL line color, making it hard to tell apart
+// from those reference lines at a glance. The TP/SL text label inside it still tells you
+// which outcome it was.
+const LIVE_MARKER_COLORS = { entry: "#ef4444", win: "#4ade80", loss: "#f43f5e", exit: "#a78bfa" }
 
 function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
   return (
@@ -926,7 +930,7 @@ export default function BitcoinEntryChart() {
 
   // Chart B/S markers (entry, TP/SL lines, closed-trade markers). Colors distinguish the
   // paper simulator from the real bot so the two are never confused on the same chart.
-  function renderTradeMarkers(state: PaperTradeState | null, colors: { entry: string; win: string; loss: string }) {
+  function renderTradeMarkers(state: PaperTradeState | null, colors: { entry: string; win: string; loss: string; exit: string }) {
     if (!state) return null
     const spacing = candles.length > 1 ? candles[1].time - candles[0].time : Infinity
 
@@ -1066,7 +1070,7 @@ export default function BitcoinEntryChart() {
           const entryIndex = indexAtTime(trade.entryTime)
           const exitIndex = indexAtTime(trade.exitTime)
           const won = trade.exitReason === "take-profit"
-          const exitColor = won ? colors.win : colors.loss
+          const exitColor = colors.exit
           const exitLabel = won ? "TP" : "SL"
 
           return (
@@ -1343,6 +1347,20 @@ export default function BitcoinEntryChart() {
                         fill={up ? "rgba(52,211,153,0.32)" : "rgba(251,113,133,0.32)"}
                       />
                     </g>
+                  )
+                })}
+
+                {/* Confirmed pivot lows (getPivotLows()'s output, already computed above for
+                    the RSI divergence markers) — the same reference points double-bottom
+                    entries retest, drawn on the price panel so it's visible which lows the
+                    strategy actually considers "remembered" support, not just any dip. */}
+                {rsiPivots.map((pivot) => {
+                  const x = chart.padding.left + pivot.index * chart.candleWidth + chart.candleWidth / 2
+                  const y = chart.padding.top + priceY(pivot.price, chart.min, chart.max, chart.priceHeight)
+                  return (
+                    <circle key={`pivot-${pivot.index}`} cx={x} cy={y + 9} r="3" fill="#0b1118" stroke="#22d3ee" strokeWidth="1.5">
+                      <title>{`확정 피벗 ${formatPrice(pivot.price)}`}</title>
+                    </circle>
                   )
                 })}
 
