@@ -264,6 +264,13 @@ function detectIctSignals(candles: Candle[]): IctSignal[] {
 // more generous rate limits, same reason BitcoinEntryChart.tsx reads live-trades.json
 // through it instead of raw.githubusercontent.com directly.
 const PAPER_TRADE_ICT_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/paper-trades-ict.json"
+// scripts/live-trade-ict.js runs persistently on the user's own PC and commits here on
+// every state change (see its own jsDelivr-purge comment) — same file shape as the paper
+// state above (mode/strategy/startingBalance/currentBalance/startedAt/openPosition/trades),
+// just against the real OKX account. Once it exists, it fully replaces the paper display
+// below (see the `paperState = liveState ?? rawPaperState` merge) — real trading superseded
+// the $100 simulation, it isn't run alongside it.
+const LIVE_TRADE_ICT_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades-ict.json"
 
 function usePolledJson<T>(url: string, intervalMs: number): T | null {
   const [data, setData] = useState<T | null>(null)
@@ -309,7 +316,10 @@ export default function IctStrategyChart() {
   const [candles, setCandles] = useState<Candle[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
-  const paperState = usePolledJson<PaperTradeState>(PAPER_TRADE_ICT_URL, 60_000)
+  const rawPaperState = usePolledJson<PaperTradeState>(PAPER_TRADE_ICT_URL, 60_000)
+  const liveState = usePolledJson<PaperTradeState>(LIVE_TRADE_ICT_URL, 30_000)
+  const isLive = liveState != null
+  const paperState = liveState ?? rawPaperState
 
   useEffect(() => {
     let cancelled = false
@@ -395,15 +405,21 @@ export default function IctStrategyChart() {
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fuchsia-300/60">BTCUSDT · ICT Concepts</p>
           <div className="mt-0.5 flex items-baseline gap-2">
             <h1 className="text-lg font-semibold text-zinc-50">유동성 스윕 · MSS · FVG</h1>
-            <span className="rounded-full border border-amber-400/40 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
-              $100 모의투자 중 · 실거래 미연결
+            <span
+              className={
+                isLive
+                  ? "rounded-full border border-rose-400/40 bg-rose-300/10 px-2 py-0.5 text-[10px] font-semibold text-rose-200"
+                  : "rounded-full border border-amber-400/40 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200"
+              }
+            >
+              {isLive ? "실거래 중 · OKX 연동" : "$100 모의투자 중 · 실거래 미연결"}
             </span>
           </div>
         </div>
         <div className="flex items-center gap-4">
           {paperState && (
             <div className="hidden text-right sm:block">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">모의 잔고</p>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">{isLive ? "실거래 잔고 (OKX)" : "모의 잔고"}</p>
               <p className="text-sm font-semibold tabular-nums text-zinc-100">
                 ${paperState.currentBalance.toFixed(2)}{" "}
                 <span className={(paperReturnPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}>
@@ -431,8 +447,18 @@ export default function IctStrategyChart() {
 
       <div className="border-b border-[#1a2432] bg-[#0d1420] px-5 py-3 text-xs text-zinc-400 lg:px-7">
         롱: 저점 유동성 스윕 → 구조 전환(MSS) → FVG 되돌림 진입 · 숏: 고점 스윕 → MSS → FVG 되돌림 진입 (차트엔 참고용으로 둘 다 표시).
-        150일 백테스트 결과 롱만 유효했어서(숏은 이 기간 내내 손실 — 상승장 편향일 수 있음), 아래 모의투자는 <strong className="text-zinc-300">롱 신호만, 손절은 스윕 극값, 목표는 2R</strong>로 GitHub Actions에서 5분마다 자동 진행 중입니다.
-        실제 Bitget 계좌·double-bottom 봇과는 완전히 분리된 $100 가상 잔고예요.
+        150일 백테스트 결과 롱만 유효했어서(숏은 이 기간 내내 손실 — 상승장 편향일 수 있음),{" "}
+        {isLive ? (
+          <>
+            아래는 <strong className="text-zinc-300">롱 신호만, 손절은 스윕 극값, 목표는 2R</strong>로 사용자 PC에서 상시 실행 중인 실거래
+            봇(scripts/live-trade-ict.js)의 실제 체결 기록입니다. 실제 Bitget 계좌·double-bottom 봇과는 완전히 분리된 별도 OKX 계좌예요.
+          </>
+        ) : (
+          <>
+            아래 모의투자는 <strong className="text-zinc-300">롱 신호만, 손절은 스윕 극값, 목표는 2R</strong>로 GitHub Actions에서 5분마다
+            자동 진행 중입니다. 실제 Bitget 계좌·double-bottom 봇과는 완전히 분리된 $100 가상 잔고예요.
+          </>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[#1a2432] bg-[#0a0e15] px-5 py-3 text-[11px] lg:px-7">
@@ -674,7 +700,7 @@ export default function IctStrategyChart() {
 
       <section className="border-t border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-200">모의투자 기록 ($100 시작, LONG only)</h2>
+          <h2 className="text-sm font-semibold text-zinc-200">{isLive ? "실거래 기록 (OKX, LONG only)" : "모의투자 기록 ($100 시작, LONG only)"}</h2>
           {paperState && (
             <span className="text-xs text-zinc-500">
               시작 {formatTime(paperState.startedAt)} · {paperState.trades.length}건 체결

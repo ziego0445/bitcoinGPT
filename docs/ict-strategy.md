@@ -7,13 +7,14 @@
 
 - **150일/15분봉 백테스트 완료** (승률/R배수/MSS·BOS/LONG·SHORT 비교, in-sample·
   out-of-sample 분리 검증 — 아래 "백테스트 결과" 참고).
-- **$100 모의투자 진행 중.** `scripts/paper-trade-ict.js`가 GitHub Actions에서 5분마다
-  실행되며 `data/paper-trades-ict.json`에 기록, "ICT 전략" 탭에서 실시간 확인 가능.
-  실제 Bitget 계좌·`scripts/live-trade.js`와는 완전히 분리된 가상 시뮬레이션.
-- **실거래(`scripts/live-trade.js`)엔 아직 연결 안 됨.** 지금 실거래는 여전히
-  `scripts/lib/signals.js`의 double-bottom 패턴만 씀. 모의투자 결과가 좋으면 실거래
-  전환을 검토하기로 함 — 아래 "실거래 전환 체크리스트" 참고.
-- LONG/SHORT 둘 다 신호는 내지만, 백테스트 결과 **모의투자는 LONG만** 사용 (아래 참고).
+- **$100 모의투자로 검증 완료, 이제 실거래 전환.** `scripts/paper-trade-ict.js`
+  (GitHub Actions cron)는 은퇴시키고, `scripts/live-trade-ict.js`가 사용자 PC에서
+  double-bottom 봇(`scripts/live-trade.js`)과 나란히 상시 실행되며 **실제 OKX 계좌**로
+  주문을 냄. `data/paper-trades-ict.json`은 기록으로만 남고 더 이상 갱신 안 됨.
+- **계좌 분리 문제는 별도 거래소(OKX)로 해결.** Bitget은 원웨이 모드라 두 봇이 같은
+  계좌·심볼을 쓰면 포지션이 합쳐지는 문제가 있었음 — double-bottom은 Bitget에 그대로
+  두고, ICT는 완전히 별도 계좌인 OKX로 옮겨서 $ 독립 운용을 달성함.
+- LONG/SHORT 둘 다 신호는 내지만, 백테스트 결과 **실거래도 LONG만** 사용 (아래 참고).
 
 ## 백테스트 결과 (150일/15분봉, in/out-of-sample 분리)
 
@@ -89,37 +90,38 @@ R=2(목표=손절폭의 2배), 스톱은 스윕 극값 기준. 계좌 100 시작
 따로 그려줄 뿐, 조합은 트레이더 재량. 이 조합 로직(3단계를 하나의 신호로 묶는 것)은
 독자적으로 설계한 부분이라 백테스트로 직접 검증하는 것 외엔 확인할 방법이 없음.
 
-## 실거래 전환 체크리스트 (모의투자 성과 보고 결정)
+## 실거래 구조 (완료)
 
-**막혀있는 결정 하나**: double-bottom 봇과 **같은 Bitget 계좌·같은 심볼(BTCUSDT)** 을
-그대로 쓰면, 계좌가 원웨이(one-way) 모드라 두 봇의 포지션이 하나로 합쳐져 버려서
-"이 봇은 $300, 이 봇은 $70" 식의 독립 운용이 안 됨. 실거래 전환 전에 아래 중 하나를
-먼저 정해야 함:
-- **Bitget 하위계정/별도 계정 발급** (추천 — 완전히 물리적으로 분리됨)
-- **다른 심볼로 구분** (예: ETHUSDT — 단, 지금 검증은 전부 BTC 데이터라 그 심볼로
-  다시 백테스트 필요)
-- 위 둘 다 싫으면 포지션 통합(단일 봇, 신호 우선순위만 결정) — $ 분리 운용 포기
+**계좌 분리는 OKX로 해결됨.** double-bottom(Bitget)과 ICT(OKX)는 서로 다른 거래소·다른
+계좌라 포지션이 절대 섞이지 않음. 별도 계정 발급이나 심볼 구분 없이 가장 단순하게
+$ 독립 운용을 달성.
 
-**계정 문제가 정리되면, `scripts/live-trade-ict.js` 만들 때 이렇게 하면 됨** (지금
-`scripts/paper-trade-ict.js`가 정확히 이 로직으로 이미 검증된 상태라 포팅만 하면 됨):
-1. `scripts/live-trade.js`를 뼈대로 복사 — Bitget 계좌 연동/재시작 복구/git 커밋 구조는
-   이미 다 만들어져 있음, 진입 조건 부분만 갈아끼우면 됨.
-2. 신호 소스를 `scripts/lib/signals.js`의 `detectSignals()` 대신
-   `scripts/lib/ict-signals.js`의 `detectICTSignals()`로 교체, **`direction === "LONG"`만
-   필터**(SHORT 배제 — 백테스트 근거, 위 참고).
-3. `presetStopLossPrice` = `signal.sweepPrice`, `presetStopSurplusPrice` =
-   `entryPrice + (entryPrice - sweepPrice) * 2` (R=2). 지금 double-bottom처럼 고정
-   ±8%가 아니라 **매 신호마다 다른 폭**이 되는 게 정상 — 스윕 극값 기준 구조적 손절.
-4. `CANDLE_GRANULARITY = "15m"` 그대로 (백테스트·모의투자 다 15분봉 기준).
-5. 증거금은 이번에 논의한 대로 **고정 금액**(`BITGET_MARGIN_USDT` 환경변수)으로 —
-   지금 double-bottom처럼 "가용잔고의 95%"로 두면 두 전략이 잔고를 두고 서로 잠식함.
-6. 상태 파일은 `data/live-trades-ict.json`처럼 double-bottom과 다른 이름으로 분리,
-   대시보드 폴링 URL(`PAPER_TRADE_ICT_URL` 자리)도 그에 맞게 교체.
+**실제 구성**:
+1. `scripts/lib/okx-client.js` — OKX v5 REST 클라이언트(`scripts/lib/bitget-client.js`와
+   같은 형태). HMAC-SHA256 서명(`OK-ACCESS-*` 헤더), 캔들/잔고/포지션 조회, 주문 실행,
+   레버리지 설정. 이 계좌는 헤지 모드(`posMode: long_short_mode`)라 모든 호출에
+   `posSide: "long"`을 명시 — 이 봇은 LONG만 거래하므로 그 외 값은 안 씀.
+2. `scripts/live-trade-ict.js` — `scripts/live-trade.js`를 뼈대로 복사, 신호 소스만
+   `detectICTSignals()`(LONG 필터)로 교체. `stopLoss = signal.sweepPrice`,
+   `takeProfit = entryPrice + (entryPrice - sweepPrice) * 2`(R=2) — double-bottom의 고정
+   ±8%와 달리 **매 신호마다 폭이 다른** 구조적 손절. `CANDLE_GRANULARITY = "15m"`,
+   증거금은 **고정 금액**(`OKX_MARGIN_USDT` 환경변수, 비우면 가용잔고의 95%) — double-bottom과
+   잔고를 두고 잠식하지 않도록 분리.
+3. TP/SL은 OKX의 `attachAlgoOrds`(진입 주문에 `tpTriggerPx`/`slTriggerPx` 첨부)로
+   거래소단에서 관리 — Bitget의 `presetStopSurplusPrice`/`presetStopLossPrice`와 동일한
+   역할. 이 프로세스가 꺼져 있어도 거래소가 청산을 보장함.
+4. 상태 파일은 `data/live-trades-ict.json`(double-bottom의 `data/live-trades.json`과
+   분리), 대시보드는 이 파일이 있으면 `data/paper-trades-ict.json` 대신 이걸 우선
+   표시함(`IctStrategyChart.tsx`의 `liveState ?? rawPaperState`).
+5. 실행: `run-live-trade-ict.bat` (더블클릭 또는 cmd에서 실행). double-bottom 봇은
+   기존대로 `run-live-trade.bat`. 둘 다 PC가 켜져 있는 동안 상시 실행되는 별도
+   프로세스 — 창을 닫으면 그 봇만 멈춤.
 
-**전환 전 최소 확인 사항**: 모의투자가 최소 며칠~몇 주치는 쌓여서 실제 라이브 데이터로도
-백테스트랑 비슷한 방향(양전, 롱 우세)이 나오는지 먼저 봐야 함 — 150일 백테스트 하나만
-믿고 바로 실거래로 가는 건 과최적화 위험 있음 (이 대화에서 double-bottom 튜닝할 때도
-in-sample만 좋고 out-of-sample에서 뒤집힌 사례가 여러 번 있었음).
+**미검증 항목 (실거래 첫 청산 때 확인 필요)**: OKX 주문내역(`orders-history`)에서
+청산 주문을 골라내는 필드 이름(`side`/`reduceOnly`/`avgPx`)은 문서 기준 추정치이고
+아직 실제 체결로 검증 전임 — `reconcilePosition()`의 주석 참고. 틀려도 실제 TP/SL
+집행(거래소단 attachAlgoOrds)에는 영향 없고, 거래 기록에 붙는 라벨(익절/손절 표시)만
+잠깐 부정확할 수 있음 — 잔고 변화로 대체 추정하는 fallback이 이미 있음.
 
 ## 그 외 다음에 해볼 만한 것 (우선순위 낮음)
 
