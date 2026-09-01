@@ -45,12 +45,19 @@
 
 ## 검증 이력
 
-실제 오픈소스 참고해서 2차례 검토, 버그 2개 발견·수정함:
+실제 오픈소스 참고해가며 총 3차례 검토, 버그 3개 발견·수정함:
 1. **선행편향**: 스윙 포인트는 확정까지 `strength`봉이 더 필요한데, 그 전인데도 이미
    안다고 취급하던 버그 → `confirmedBy()`로 수정.
 2. **MSS 방향 반대**: 스윕 "이후"에 새로 생긴 자잘한 고점/저점을 구조 레벨로 잘못 참조
    하고 있었음(실데이터로 확인: sweepIndex=115일 때 index 117/121을 썼는데, 실제로는
    스윕 이전의 진짜 구조 고점인 index 111이 맞음) → 스윕 "이전" 확정된 스윙으로 수정.
+3. **MSS/BOS 분류와 실제 참조 레벨이 서로 다른 걸 보고 있었음**: BOS/CHoCH 구분을
+   넣으면서 `findStructureBreak()`(스윕 시점 기준 스윙 참조)와 `computeStructureBreaks()`
+   (매 캔들마다 계속 갱신되는 스윙 참조)를 따로 두고, 후자에서 타입만 인덱스로 찾아
+   붙였는데 — 두 함수가 서로 다른 스윙 레벨을 참조하는 경우가 실데이터 신호의
+   **54%(35개 중 19개)** 에서 발생, `mssType`이 틀리거나 기본값(MSS)으로 얼버무려지고
+   있었음 → 구조 판정을 `computeStructureBreaks()` 하나로 통일하고
+   `findStructureBreak()`는 제거. 재검증 결과 불일치 0건.
 
 이후 KanekiCraynet/Price-Action-Concepts(MIT)와 LuxAlgo "ICT Concepts" 원본(CC BY-NC-SA
 4.0, 실제 Pine 소스 확인)을 참고해서 BOS/CHoCH 구분을 반영함. **다만 LuxAlgo 원본에도

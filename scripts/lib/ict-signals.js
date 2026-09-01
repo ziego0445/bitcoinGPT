@@ -65,40 +65,23 @@ function findLiquiditySweep(swingLows, swingHighs, candles, index, strength) {
   return null;
 }
 
-// Market Structure Shift: price CLOSES beyond the last swing point the PRIOR trend was
-// built on — the "lower high" a downtrend kept making (bullish break) or the "higher low"
-// an uptrend kept making (bearish break). That reference point has to already exist
-// before the sweep that's reversing it; it is NOT a new peak/trough forming during the
-// post-sweep bounce itself (an earlier version of this function searched forward from the
-// sweep and was picking up exactly that — a minor bump in the reaction leg, not the
-// structural level the reversal is actually supposed to invalidate).
+// One forward pass over the WHOLE series computing every structure break — price CLOSES
+// beyond the most recently confirmed opposite-side swing point. Classified as "MSS" (the
+// first break in a new direction — doubles as ICT's CHoCH, a trend reversal) or "BOS" (a
+// further break continuing the direction the trend is already in), mirroring LuxAlgo's
+// ICT Concepts indicator's MSS.dir state machine. A given swing level only fires once
+// (matches that indicator's crossed/cross-reset behavior) — a run of closes beyond the
+// same level isn't a new event each candle.
 //
-// BOS vs CHoCH (here called "MSS" to match LuxAlgo's "ICT Concepts" indicator, which uses
-// the same trend-flip state machine: MSS.dir starts undetermined, the first break in a new
-// direction is the shift, further same-direction breaks are BOS) is tracked via
-// `trend`/`brokenLevels`, threaded in from computeStructureBreaks() below rather than
-// recomputed locally — a single forward pass is enough to know the whole sequence.
-function findStructureBreak(swingHighs, swingLows, candles, sweepIndex, toIndex, direction, strength) {
-  if (direction === "bullish") {
-    const swingHigh = confirmedBy(swingHighs, sweepIndex, strength).at(-1);
-    if (swingHigh && candles[toIndex].close > swingHigh.price) {
-      return { index: toIndex, brokenLevel: swingHigh.price };
-    }
-  } else {
-    const swingLow = confirmedBy(swingLows, sweepIndex, strength).at(-1);
-    if (swingLow && candles[toIndex].close < swingLow.price) {
-      return { index: toIndex, brokenLevel: swingLow.price };
-    }
-  }
-  return null;
-}
-
-// One forward pass classifying every structure break in the series as "MSS" (the first
-// break in a new direction — doubles as ICT's CHoCH, a trend reversal) or "BOS" (a further
-// break continuing the direction the trend is already in). Mirrors LuxAlgo's ICT Concepts
-// indicator's MSS.dir state machine. A given swing level only fires once (matches that
-// indicator's crossed/cross-reset behavior) — a run of closes beyond the same level isn't
-// a new event each candle.
+// This is the ONLY place structure breaks get computed — detectICTSignals() below looks
+// up breaks from this same list rather than re-deriving them per sweep candidate. An
+// earlier version had a second, separate findStructureBreak() that re-checked "close vs.
+// the swing confirmed as of the sweep candle" for each (sweepIndex, candidate) pair —
+// since the "most recently confirmed swing" can change between the sweep and the actual
+// break candle, that produced a DIFFERENT swing reference than this function's own
+// continuously-updated one, so the two disagreed on ~half of all real signals about which
+// level (and therefore which MSS/BOS type) actually applied. Keeping one source of truth
+// closes that gap.
 function computeStructureBreaks(candles, swingHighs, swingLows, strength) {
   const breaks = [];
   let trend = 0; // 0 = undetermined yet, 1 = bullish, -1 = bearish
@@ -183,7 +166,27 @@ const MSS_MAX_GAP = 15; // sweep -> structure break must land within this many c
 function detectICTSignals(candles, { swingStrength = 2, fvgMinWidthATR = 0 } = {}) {
   const { highs: swingHighs, lows: swingLows } = getSwingPoints(candles, swingStrength);
   const structureBreaks = computeStructureBreaks(candles, swingHighs, swingLows, swingStrength);
-  const structureBreakType = new Map(structureBreaks.map((b) => [`${b.index}-${b.direction}`, b.type]));
+  // Split by direction (each still sorted ascending by index) so the lookup below can
+  // binary-search instead of scanning — matters once this runs over a real backtest's
+  // worth of candles, not just a 200-candle dashboard window.
+  const breaksByDirection = {
+    bullish: structureBreaks.filter((b) => b.direction === "bullish"),
+    bearish: structureBreaks.filter((b) => b.direction === "bearish"),
+  };
+  // First structure break strictly after `afterIndex` and at or before `maxIndex`, or
+  // null. Binary search since breaksByDirection[...] is sorted ascending.
+  function firstBreakInWindow(direction, afterIndex, maxIndex) {
+    const list = breaksByDirection[direction];
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid].index <= afterIndex) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo >= list.length) return null;
+    return list[lo].index <= maxIndex ? list[lo] : null;
+  }
   // Only computed when the width filter is actually on — ATR isn't free at scale.
   const atrSeries = fvgMinWidthATR > 0 ? computeATR(candles, 14) : null;
   const signals = [];
@@ -197,19 +200,16 @@ function detectICTSignals(candles, { swingStrength = 2, fvgMinWidthATR = 0 } = {
       const sweep = findLiquiditySweep(swingLows, swingHighs, candles, sweepIndex, swingStrength);
       if (!sweep) continue;
 
-      let mss = null;
+      const mssBreak = firstBreakInWindow(sweep.direction, sweepIndex, Math.min(index, sweepIndex + MSS_MAX_GAP));
+      if (!mssBreak) continue;
+      const mss = { index: mssBreak.index, brokenLevel: mssBreak.level };
+
       let fvg = null;
-      for (let k = sweepIndex + 1; k <= Math.min(index, sweepIndex + MSS_MAX_GAP); k += 1) {
-        if (!mss) mss = findStructureBreak(swingHighs, swingLows, candles, sweepIndex, k, sweep.direction, swingStrength);
-        if (mss && !fvg) {
-          for (let f = mss.index; f >= sweepIndex + 2; f -= 1) {
-            fvg = findFairValueGap(candles, f, sweep.direction, atrSeries, fvgMinWidthATR);
-            if (fvg) break;
-          }
-        }
-        if (mss && fvg) break;
+      for (let f = mss.index; f >= sweepIndex + 2; f -= 1) {
+        fvg = findFairValueGap(candles, f, sweep.direction, atrSeries, fvgMinWidthATR);
+        if (fvg) break;
       }
-      if (!mss || !fvg) continue;
+      if (!fvg) continue;
 
       const setupKey = `${sweepIndex}-${mss.index}`;
       if (firedSetups.has(setupKey)) continue;
@@ -242,7 +242,7 @@ function detectICTSignals(candles, { swingStrength = 2, fvgMinWidthATR = 0 } = {
         // reversal signal); "BOS" = a further break continuing a trend already underway.
         // Exposed rather than filtered so a backtest can compare MSS-only vs BOS-only vs
         // both, instead of guessing which one actually performs better.
-        mssType: structureBreakType.get(`${mss.index}-${sweep.direction}`) ?? "MSS",
+        mssType: mssBreak.type,
         fvgLow: fvg.low,
         fvgHigh: fvg.high,
         fvgFormedAt: fvg.formedAt,
@@ -261,7 +261,6 @@ function detectICTSignals(candles, { swingStrength = 2, fvgMinWidthATR = 0 } = {
 module.exports = {
   getSwingPoints,
   findLiquiditySweep,
-  findStructureBreak,
   computeStructureBreaks,
   computeATR,
   findFairValueGap,
