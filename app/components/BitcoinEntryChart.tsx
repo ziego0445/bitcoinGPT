@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import KakaoAd from "./KakaoAd"
 
 type Timeframe = "5m" | "15m" | "1h" | "4h"
 type Direction = "LONG" | "WAIT"
@@ -106,20 +107,6 @@ const LIVE_TRADE_STATE_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@m
 // doesn't collide with any other marker hue (TP green, SL rose, exit violet, active pivot
 // amber, inactive pivot cyan).
 const LIVE_MARKER_COLORS = { entry: "#f472b6", win: "#4ade80", loss: "#f43f5e", exit: "#a78bfa" }
-
-function KakaoAd({ unit, width, height }: { unit: string; width: number; height: number }) {
-  return (
-    <div className="flex min-h-[120px] items-center justify-center border border-[#1b2938] bg-[#080d13] p-2">
-      <ins
-        className="kakao_ad_area"
-        style={{ display: "none" }}
-        data-ad-unit={unit}
-        data-ad-width={width}
-        data-ad-height={height}
-      />
-    </div>
-  )
-}
 
 function toCandle(item: unknown[]): Candle {
   return {

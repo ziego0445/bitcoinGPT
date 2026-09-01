@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import KakaoAd from "./KakaoAd"
 
 // ICT (Inner Circle Trader) concept-based signal detection: Liquidity Sweep -> Market
 // Structure Shift (MSS) -> Fair Value Gap (FVG) entry. Mirrors scripts/lib/ict-signals.js
@@ -440,7 +441,11 @@ export default function IctStrategyChart() {
   const winRatePct = closedTrades.length ? (winCount / closedTrades.length) * 100 : null
 
   return (
-    <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
+    <>
+      <div className="mx-auto mb-4 w-full max-w-[1360px]">
+        <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
+      </div>
+      <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#1a2432] bg-[#0c1119] px-5 py-4 lg:px-7">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fuchsia-300/60">BTCUSDT · ICT Concepts</p>
@@ -485,22 +490,6 @@ export default function IctStrategyChart() {
           </div>
         </div>
       </header>
-
-      <div className="border-b border-[#1a2432] bg-[#0d1420] px-5 py-3 text-xs text-zinc-400 lg:px-7">
-        롱: 저점 유동성 스윕 → 구조 전환(MSS) → FVG 되돌림 진입 · 숏: 고점 스윕 → MSS → FVG 되돌림 진입 (차트엔 참고용으로 둘 다 표시).
-        150일 백테스트 결과 롱만 유효했어서(숏은 이 기간 내내 손실 — 상승장 편향일 수 있음),{" "}
-        {isLive ? (
-          <>
-            아래는 <strong className="text-zinc-300">롱 신호만, 손절은 스윕 극값, 목표는 2R</strong>로 사용자 PC에서 상시 실행 중인 실거래
-            봇(scripts/live-trade-ict.js)의 실제 체결 기록입니다. 실제 Bitget 계좌·double-bottom 봇과는 완전히 분리된 별도 OKX 계좌예요.
-          </>
-        ) : (
-          <>
-            아래 모의투자는 <strong className="text-zinc-300">롱 신호만, 손절은 스윕 극값, 목표는 2R</strong>로 GitHub Actions에서 5분마다
-            자동 진행 중입니다. 실제 Bitget 계좌·double-bottom 봇과는 완전히 분리된 $100 가상 잔고예요.
-          </>
-        )}
-      </div>
 
       <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -962,6 +951,13 @@ export default function IctStrategyChart() {
           </p>
         </div>
       </section>
-    </div>
+
+      <section className="border-t border-[#1a2432] bg-[#080b11] px-5 py-5">
+        <div className="mx-auto w-full max-w-[300px]">
+          <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
+        </div>
+      </section>
+      </div>
+    </>
   )
 }

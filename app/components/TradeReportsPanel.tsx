@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import KakaoAd from "./KakaoAd"
 
 // Trade-report journal: every real entry (both bots) writes one of these the moment it
 // fires — why it entered (reasonDetail, straight from the signal that triggered it) plus
@@ -181,7 +182,11 @@ export default function TradeReportsPanel() {
   const winCount = merged.filter((r) => r.exitReason === "take-profit").length
 
   return (
-    <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
+    <>
+      <div className="mx-auto mb-4 w-full max-w-[1360px]">
+        <KakaoAd unit="DAN-0A1Dxif5Rgz57Nwg" width={320} height={100} />
+      </div>
+      <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#1a2432] bg-[#0c1119] px-5 py-4 lg:px-7">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-300/60">실거래 회고 저널</p>
@@ -243,6 +248,13 @@ export default function TradeReportsPanel() {
           merged.map((report) => <ReportCard key={report.id} report={report} />)
         )}
       </div>
-    </div>
+
+      <section className="border-t border-[#1a2432] bg-[#080b11] px-5 py-5">
+        <div className="mx-auto w-full max-w-[300px]">
+          <KakaoAd unit="DAN-6jUyeCB09Hw8CGmH" width={300} height={250} />
+        </div>
+      </section>
+      </div>
+    </>
   )
 }
