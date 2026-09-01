@@ -1,6 +1,5 @@
-import BitcoinEntryChart from "./components/BitcoinEntryChart"
+import StrategyTabs from "./components/StrategyTabs"
 
 export default function Home() {
-  return <BitcoinEntryChart />
+  return <StrategyTabs />
 }
-
