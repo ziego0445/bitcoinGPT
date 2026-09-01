@@ -14,6 +14,38 @@ import { useEffect, useMemo, useState } from "react"
 type Timeframe = "5m" | "15m" | "1h" | "4h"
 type Direction = "LONG" | "SHORT"
 
+interface PaperOpenPosition {
+  pattern: string
+  mssType: "MSS" | "BOS"
+  leverage: number
+  entryTime: number
+  entryPrice: number
+  stopLoss: number
+  takeProfit: number
+}
+
+interface PaperTrade {
+  pattern: string
+  mssType: "MSS" | "BOS"
+  leverage: number
+  entryTime: number
+  entryPrice: number
+  exitTime: number
+  exitPrice: number
+  exitReason: "take-profit" | "stop-loss"
+  pnlPct: number
+}
+
+interface PaperTradeState {
+  mode: string
+  strategy: string
+  startingBalance: number
+  currentBalance: number
+  startedAt: number
+  openPosition: PaperOpenPosition | null
+  trades: PaperTrade[]
+}
+
 interface Candle {
   time: number
   open: number
@@ -227,6 +259,41 @@ function detectIctSignals(candles: Candle[]): IctSignal[] {
   return signals
 }
 
+// scripts/paper-trade-ict.js runs on the same GitHub Actions cron as the Telegram alert
+// (every 5 minutes) and commits here — jsDelivr mirrors the raw GitHub content with far
+// more generous rate limits, same reason BitcoinEntryChart.tsx reads live-trades.json
+// through it instead of raw.githubusercontent.com directly.
+const PAPER_TRADE_ICT_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/paper-trades-ict.json"
+
+function usePolledJson<T>(url: string, intervalMs: number): T | null {
+  const [data, setData] = useState<T | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      try {
+        const response = await fetch(url, { cache: "no-store" })
+        if (!response.ok) throw new Error(`${url} ${response.status}`)
+        const next = (await response.json()) as T
+        if (!cancelled) setData(next)
+      } catch {
+        // Swallow and keep the last known value — a transient fetch failure shouldn't
+        // blank out a panel that already has good data.
+      }
+    }
+
+    load()
+    const interval = window.setInterval(load, intervalMs)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [url, intervalMs])
+
+  return data
+}
+
 function formatPrice(price: number) {
   return `$${price.toLocaleString("en-US", { maximumFractionDigits: price >= 1000 ? 0 : 2 })}`
 }
@@ -242,6 +309,7 @@ export default function IctStrategyChart() {
   const [candles, setCandles] = useState<Candle[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const paperState = usePolledJson<PaperTradeState>(PAPER_TRADE_ICT_URL, 60_000)
 
   useEffect(() => {
     let cancelled = false
@@ -304,6 +372,21 @@ export default function IctStrategyChart() {
   function yAt(price: number) {
     return CHART.padding.top + ((max - price) / (max - min)) * plotHeight
   }
+  // Maps a paper-trade timestamp (always on 15m data — see paper-trade-ict.js) onto
+  // whichever candle set is currently displayed, same approach as
+  // BitcoinEntryChart.tsx's renderTradeMarkers().
+  function indexAtTime(time: number) {
+    if (!candles.length || time < candles[0].time) return -1
+    let found = -1
+    for (let i = 0; i < candles.length; i += 1) {
+      if (candles[i].time <= time) found = i
+      else break
+    }
+    return found
+  }
+
+  const paperReturnPct = paperState ? ((paperState.currentBalance - paperState.startingBalance) / paperState.startingBalance) * 100 : null
+  const paperEntryIndex = paperState?.openPosition ? indexAtTime(paperState.openPosition.entryTime) : -1
 
   return (
     <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
@@ -313,28 +396,77 @@ export default function IctStrategyChart() {
           <div className="mt-0.5 flex items-baseline gap-2">
             <h1 className="text-lg font-semibold text-zinc-50">유동성 스윕 · MSS · FVG</h1>
             <span className="rounded-full border border-amber-400/40 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
-              실험적 · 백테스트 전 · 실거래 미연결
+              $100 모의투자 중 · 실거래 미연결
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 rounded-full border border-[#28394b] bg-[#0a1017] p-1">
-          {(["5m", "15m", "1h", "4h"] as Timeframe[]).map((tf) => (
-            <button
-              key={tf}
-              onClick={() => setTimeframe(tf)}
-              className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
-                timeframe === tf ? "bg-fuchsia-400/20 text-fuchsia-200" : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {tf}
-            </button>
-          ))}
+        <div className="flex items-center gap-4">
+          {paperState && (
+            <div className="hidden text-right sm:block">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">모의 잔고</p>
+              <p className="text-sm font-semibold tabular-nums text-zinc-100">
+                ${paperState.currentBalance.toFixed(2)}{" "}
+                <span className={(paperReturnPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}>
+                  ({(paperReturnPct ?? 0) >= 0 ? "+" : ""}
+                  {(paperReturnPct ?? 0).toFixed(1)}%)
+                </span>
+              </p>
+            </div>
+          )}
+          <div className="flex items-center gap-1.5 rounded-full border border-[#28394b] bg-[#0a1017] p-1">
+            {(["5m", "15m", "1h", "4h"] as Timeframe[]).map((tf) => (
+              <button
+                key={tf}
+                onClick={() => setTimeframe(tf)}
+                className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                  timeframe === tf ? "bg-fuchsia-400/20 text-fuchsia-200" : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
       <div className="border-b border-[#1a2432] bg-[#0d1420] px-5 py-3 text-xs text-zinc-400 lg:px-7">
-        롱: 저점 유동성 스윕 → 구조 전환(MSS) → FVG 되돌림 진입 · 숏: 고점 스윕 → MSS → FVG 되돌림 진입.
-        아직 백테스트/파라미터 튜닝 전이라 참고용으로만 봐주세요 — double-bottom 실거래 봇과는 별개로 동작합니다.
+        롱: 저점 유동성 스윕 → 구조 전환(MSS) → FVG 되돌림 진입 · 숏: 고점 스윕 → MSS → FVG 되돌림 진입 (차트엔 참고용으로 둘 다 표시).
+        150일 백테스트 결과 롱만 유효했어서(숏은 이 기간 내내 손실 — 상승장 편향일 수 있음), 아래 모의투자는 <strong className="text-zinc-300">롱 신호만, 손절은 스윕 극값, 목표는 2R</strong>로 GitHub Actions에서 5분마다 자동 진행 중입니다.
+        실제 Bitget 계좌·double-bottom 봇과는 완전히 분리된 $100 가상 잔고예요.
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[#1a2432] bg-[#0a0e15] px-5 py-3 text-[11px] lg:px-7">
+        <span className="font-semibold text-zinc-500">차트 보는 법:</span>
+        <span className="flex items-center gap-1.5 text-zinc-400">
+          <span className="inline-block h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: "#f472b6" }} />
+          ①스윕 — 직전 저점/고점을 살짝 뚫고 다시 안으로 마감 (스탑헌팅)
+        </span>
+        <span className="flex items-center gap-1.5 text-zinc-400">
+          <span className="inline-block h-0.5 w-3.5" style={{ backgroundColor: "#22d3ee" }} />
+          ②MSS/BOS 점선 — 스윕 반대편 구조 레벨을 종가로 돌파 (MSS=추세 전환, BOS=추세 지속)
+        </span>
+        <span className="flex items-center gap-1.5 text-zinc-400">
+          <span className="inline-block h-2.5 w-3.5 rounded-sm border border-dashed" style={{ borderColor: "#22d3ee", backgroundColor: "rgba(34,211,238,0.15)" }} />
+          FVG 박스 — 3개 봉 사이 안 겹치는 빈 구간, 가격이 다시 채우러(되돌림) 오는 자리
+        </span>
+        <span className="flex items-center gap-1.5 text-zinc-400">
+          <span className="inline-block h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: "#22d3ee" }} />
+          ③진입 — 가격이 FVG 안으로 되돌아온 순간 (시안=롱, 주황=숏)
+        </span>
+        <span className="ml-auto flex items-center gap-3 text-zinc-500">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: "#facc15" }} />B 모의진입
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-0.5 w-3.5" style={{ backgroundColor: "#4ade80" }} />TP
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-0.5 w-3.5" style={{ backgroundColor: "#f43f5e" }} />SL
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: "#a78bfa" }} />청산
+          </span>
+        </span>
       </div>
 
       <div className="relative aspect-[1200/520] w-full bg-[#070a0f]">
@@ -350,20 +482,29 @@ export default function IctStrategyChart() {
               const x2 = xAt(signal.index) + candleWidth
               const y1 = yAt(signal.fvgHigh)
               const y2 = yAt(signal.fvgLow)
+              const boxHeight = Math.max(1, y2 - y1)
               const color = signal.direction === "LONG" ? "#22d3ee" : "#fb923c"
               return (
-                <rect
-                  key={`fvg-${signal.sweepIndex}-${signal.mssIndex}`}
-                  x={x1}
-                  y={y1}
-                  width={Math.max(1, x2 - x1)}
-                  height={Math.max(1, y2 - y1)}
-                  fill={color}
-                  fillOpacity="0.12"
-                  stroke={color}
-                  strokeOpacity="0.4"
-                  strokeDasharray="4 4"
-                />
+                <g key={`fvg-${signal.sweepIndex}-${signal.mssIndex}`}>
+                  <rect
+                    x={x1}
+                    y={y1}
+                    width={Math.max(1, x2 - x1)}
+                    height={boxHeight}
+                    fill={color}
+                    fillOpacity="0.12"
+                    stroke={color}
+                    strokeOpacity="0.4"
+                    strokeDasharray="4 4"
+                  />
+                  {/* Label the gap itself so it reads as "FVG" without needing to hover —
+                      only when the box is tall enough on screen for text to fit inside. */}
+                  {boxHeight >= 12 && (
+                    <text x={x1 + 3} y={y1 + boxHeight / 2 + 3} fill={color} fillOpacity="0.85" fontSize="9" fontWeight="700">
+                      FVG
+                    </text>
+                  )}
+                </g>
               )
             })}
 
@@ -389,14 +530,25 @@ export default function IctStrategyChart() {
               )
             })}
 
-            {/* Sweep + MSS + entry markers for each detected setup */}
+            {/* Sweep + MSS + entry markers for each detected setup — labeled directly on
+                the chart (1.스윕 2.구조전환 3.진입, matching the order things actually
+                happen) rather than only on hover, so the 3-step story reads at a glance. */}
             {signals.map((signal) => {
               const color = signal.direction === "LONG" ? "#22d3ee" : "#fb923c"
+              const sweepY = yAt(signal.sweepPrice)
+              const sweepLabelY = signal.direction === "LONG" ? sweepY + 16 : sweepY - 10
+              const mssMidX = (xAt(signal.sweepIndex) + xAt(signal.mssIndex)) / 2
+              const mssLabelY = signal.direction === "LONG" ? yAt(signal.mssLevel) - 6 : yAt(signal.mssLevel) + 13
+              const entryY = yAt(signal.direction === "LONG" ? signal.fvgLow : signal.fvgHigh)
+              const entryLabelY = signal.direction === "LONG" ? entryY + 18 : entryY - 12
               return (
                 <g key={`markers-${signal.sweepIndex}-${signal.mssIndex}`}>
-                  <circle cx={xAt(signal.sweepIndex)} cy={yAt(signal.sweepPrice)} r="4" fill="#0b1118" stroke="#f472b6" strokeWidth="2">
-                    <title>{`유동성 스윕 ${formatPrice(signal.sweepPrice)}`}</title>
+                  <circle cx={xAt(signal.sweepIndex)} cy={sweepY} r="4" fill="#0b1118" stroke="#f472b6" strokeWidth="2">
+                    <title>{`① 유동성 스윕 — 직전 스윙${signal.direction === "LONG" ? " 저점" : " 고점"} ${formatPrice(signal.sweepPrice)}을 꼬리로 뚫고 종가는 다시 안쪽으로 마감 (스탑헌팅)`}</title>
                   </circle>
+                  <text x={xAt(signal.sweepIndex)} y={sweepLabelY} fill="#f472b6" fontSize="9" fontWeight="700" textAnchor="middle">
+                    ①스윕
+                  </text>
                   <line
                     x1={xAt(signal.sweepIndex)}
                     x2={xAt(signal.mssIndex)}
@@ -406,9 +558,77 @@ export default function IctStrategyChart() {
                     strokeWidth="1.4"
                     strokeDasharray="3 3"
                   />
-                  <circle cx={xAt(signal.index)} cy={yAt(signal.direction === "LONG" ? signal.fvgLow : signal.fvgHigh)} r="6" fill="#0b1118" stroke={color} strokeWidth="2">
+                  <text x={mssMidX} y={mssLabelY} fill={color} fontSize="9" fontWeight="700" textAnchor="middle">
+                    ②{signal.mssType}
+                  </text>
+                  <circle cx={xAt(signal.index)} cy={entryY} r="6" fill="#0b1118" stroke={color} strokeWidth="2">
                     <title>{signal.detail}</title>
                   </circle>
+                  <text x={xAt(signal.index)} y={entryLabelY} fill={color} fontSize="9" fontWeight="700" textAnchor="middle">
+                    ③진입
+                  </text>
+                </g>
+              )
+            })}
+
+            {/* $100 paper-trade state (scripts/paper-trade-ict.js) — same B/TP/SL
+                convention as the double-bottom dashboard's live panel, in colors that
+                don't collide with the sweep/MSS/FVG markers above (pink/cyan/orange). */}
+            {paperState?.openPosition && (
+              <g>
+                {[
+                  { price: paperState.openPosition.entryPrice, color: "#facc15", label: "B" },
+                  { price: paperState.openPosition.takeProfit, color: "#4ade80", label: "TP" },
+                  { price: paperState.openPosition.stopLoss, color: "#f43f5e", label: "SL" },
+                ]
+                  .filter((line) => line.price >= min && line.price <= max)
+                  .map((line) => (
+                    <g key={line.label}>
+                      <line
+                        x1={CHART.padding.left}
+                        x2={CHART.width - CHART.padding.right}
+                        y1={yAt(line.price)}
+                        y2={yAt(line.price)}
+                        stroke={line.color}
+                        strokeDasharray="5 5"
+                        strokeWidth="1.4"
+                        strokeOpacity="0.85"
+                      />
+                      <text x={CHART.width - CHART.padding.right + 8} y={yAt(line.price) + 4} fill={line.color} fontSize="11" fontWeight="800">
+                        {line.label} {formatPrice(line.price)}
+                      </text>
+                    </g>
+                  ))}
+                {paperEntryIndex >= 0 && (
+                  <circle
+                    cx={xAt(paperEntryIndex)}
+                    cy={yAt(paperState.openPosition.entryPrice)}
+                    r="8"
+                    fill="#071017"
+                    stroke="#facc15"
+                    strokeWidth="2"
+                  >
+                    <title>{`모의 진입 ${formatPrice(paperState.openPosition.entryPrice)}`}</title>
+                  </circle>
+                )}
+              </g>
+            )}
+            {paperState?.trades.slice(-20).map((trade) => {
+              const entryIndex = indexAtTime(trade.entryTime)
+              const exitIndex = indexAtTime(trade.exitTime)
+              const won = trade.exitReason === "take-profit"
+              return (
+                <g key={`${trade.entryTime}-${trade.exitTime}`}>
+                  {entryIndex >= 0 && (
+                    <circle cx={xAt(entryIndex)} cy={yAt(trade.entryPrice)} r="6" fill="#071017" stroke="#facc15" strokeWidth="1.6">
+                      <title>{`모의 진입 ${formatPrice(trade.entryPrice)}`}</title>
+                    </circle>
+                  )}
+                  {exitIndex >= 0 && (
+                    <circle cx={xAt(exitIndex)} cy={yAt(trade.exitPrice)} r="7" fill="#071017" stroke="#a78bfa" strokeWidth="1.6">
+                      <title>{`모의 청산(${won ? "익절" : "손절"}) ${formatPrice(trade.exitPrice)}`}</title>
+                    </circle>
+                  )}
                 </g>
               )
             })}
@@ -433,14 +653,87 @@ export default function IctStrategyChart() {
               >
                 <div className="mb-1 flex items-center justify-between">
                   <span className={`font-bold ${signal.direction === "LONG" ? "text-cyan-300" : "text-orange-300"}`}>{signal.direction}</span>
-                  <span className="text-zinc-500">{formatTime(closedCandles[signal.index].time)}</span>
+                  <span className="text-zinc-500">③진입 {formatTime(closedCandles[signal.index].time)}</span>
                 </div>
                 <p className="text-zinc-400">{signal.detail}</p>
-                <p className="mt-1.5 text-zinc-500">
-                  스윕 {formatPrice(signal.sweepPrice)} · {signal.mssType} {formatPrice(signal.mssLevel)} · FVG {formatPrice(signal.fvgLow)}~{formatPrice(signal.fvgHigh)}
-                </p>
+                <div className="mt-1.5 space-y-0.5 text-zinc-500">
+                  <p>
+                    <span className="text-[#f472b6]">①스윕</span> {formatTime(closedCandles[signal.sweepIndex].time)} · {formatPrice(signal.sweepPrice)}
+                  </p>
+                  <p>
+                    <span className={signal.direction === "LONG" ? "text-cyan-300" : "text-orange-300"}>②{signal.mssType}</span>{" "}
+                    {formatTime(closedCandles[signal.mssIndex].time)} · {formatPrice(signal.mssLevel)}
+                  </p>
+                  <p>FVG 구간 {formatPrice(signal.fvgLow)} ~ {formatPrice(signal.fvgHigh)}</p>
+                </div>
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="border-t border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-200">모의투자 기록 ($100 시작, LONG only)</h2>
+          {paperState && (
+            <span className="text-xs text-zinc-500">
+              시작 {formatTime(paperState.startedAt)} · {paperState.trades.length}건 체결
+            </span>
+          )}
+        </div>
+        {!paperState ? (
+          <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
+            모의투자 기록을 불러오는 중입니다...
+          </div>
+        ) : paperState.trades.length === 0 && !paperState.openPosition ? (
+          <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
+            아직 체결된 모의 트레이드가 없습니다. LONG 신호가 뜨면 GitHub Actions가 5분 내로 자동 진입시킵니다.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-[#1f2b3a] text-left text-zinc-500">
+                  <th className="py-2 pr-3 font-medium">상태</th>
+                  <th className="py-2 pr-3 font-medium">진입</th>
+                  <th className="py-2 pr-3 font-medium">청산</th>
+                  <th className="py-2 pr-3 font-medium">진입가</th>
+                  <th className="py-2 pr-3 font-medium">청산가</th>
+                  <th className="py-2 pr-3 font-medium">손익</th>
+                  <th className="py-2 font-medium">MSS/BOS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paperState.openPosition && (
+                  <tr className="border-b border-[#1a2432] text-amber-200">
+                    <td className="py-2 pr-3 font-semibold">보유중</td>
+                    <td className="py-2 pr-3 text-zinc-300">{formatTime(paperState.openPosition.entryTime)}</td>
+                    <td className="py-2 pr-3 text-zinc-600">-</td>
+                    <td className="py-2 pr-3 tabular-nums text-zinc-300">{formatPrice(paperState.openPosition.entryPrice)}</td>
+                    <td className="py-2 pr-3 text-zinc-600">-</td>
+                    <td className="py-2 pr-3 text-zinc-600">-</td>
+                    <td className="py-2 text-zinc-400">{paperState.openPosition.mssType}</td>
+                  </tr>
+                )}
+                {[...paperState.trades].reverse().map((trade) => {
+                  const won = trade.exitReason === "take-profit"
+                  return (
+                    <tr key={`${trade.entryTime}-${trade.exitTime}`} className="border-b border-[#1a2432]">
+                      <td className={`py-2 pr-3 font-semibold ${won ? "text-emerald-300" : "text-rose-300"}`}>{won ? "익절" : "손절"}</td>
+                      <td className="py-2 pr-3 text-zinc-400">{formatTime(trade.entryTime)}</td>
+                      <td className="py-2 pr-3 text-zinc-400">{formatTime(trade.exitTime)}</td>
+                      <td className="py-2 pr-3 tabular-nums text-zinc-300">{formatPrice(trade.entryPrice)}</td>
+                      <td className="py-2 pr-3 tabular-nums text-zinc-300">{formatPrice(trade.exitPrice)}</td>
+                      <td className={`py-2 pr-3 tabular-nums font-semibold ${trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                        {trade.pnlPct >= 0 ? "+" : ""}
+                        {trade.pnlPct.toFixed(2)}%
+                      </td>
+                      <td className="py-2 text-zinc-500">{trade.mssType}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </section>

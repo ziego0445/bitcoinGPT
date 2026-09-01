@@ -31,3 +31,25 @@ jobs:
       # scripts/live-trade.js runs against the real Bitget account instead — see that
       # script for details. data/paper-trades.json is left in place as history but no
       # longer updated here.
+
+      # New, separate ICT-strategy paper trial (data/paper-trades-ict.json) — a $100
+      # simulation, not connected to the real Bitget account or scripts/live-trade.js.
+      # `if: always()` so a Telegram hiccup can never freeze this from updating every
+      # 5 minutes, same reasoning the old paper-trade.js step used.
+      - name: Update ICT paper-trading simulation
+        if: always()
+        run: node scripts/paper-trade-ict.js
+
+      - name: Commit ICT paper-trade state if it changed
+        if: always()
+        run: |
+          if git diff --quiet -- data/paper-trades-ict.json; then
+            echo "No ICT paper-trade state change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/paper-trades-ict.json
+          git commit -m "Update ICT paper-trade state [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main

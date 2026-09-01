@@ -1,16 +1,40 @@
-# ICT 전략 (실험적, 미검증)
+# ICT 전략
 
-`scripts/lib/ict-signals.js` / `app/components/IctStrategyChart.tsx` 기준 정리. 이 문서와
-코드가 어긋나면 코드가 맞습니다.
+`scripts/lib/ict-signals.js` / `app/components/IctStrategyChart.tsx` / `scripts/paper-trade-ict.js`
+기준 정리. 이 문서와 코드가 어긋나면 코드가 맞습니다.
 
-## 상태
+## 상태 (지금 여기까지 왔음)
 
-- **백테스트 안 함.** 파라미터(스윙 강도, 룩백 범위)는 첫 추정치일 뿐 아무것도 검증 안 됨.
-- **실거래(`scripts/live-trade.js`)에 연결 안 됨.** 지금 실거래는 여전히 `scripts/lib/signals.js`의
-  double-bottom 패턴만 씀. 이 전략은 대시보드 상단 "ICT 전략" 탭에서 **참고용으로 보기만**
-  가능함.
-- LONG/SHORT 둘 다 신호는 내는데, 실거래 봇은 현재 **단일 포지션·LONG 전용** 구조라
-  SHORT을 실제로 걸려면 `live-trade.js`를 먼저 고쳐야 함 (별도 작업).
+- **150일/15분봉 백테스트 완료** (승률/R배수/MSS·BOS/LONG·SHORT 비교, in-sample·
+  out-of-sample 분리 검증 — 아래 "백테스트 결과" 참고).
+- **$100 모의투자 진행 중.** `scripts/paper-trade-ict.js`가 GitHub Actions에서 5분마다
+  실행되며 `data/paper-trades-ict.json`에 기록, "ICT 전략" 탭에서 실시간 확인 가능.
+  실제 Bitget 계좌·`scripts/live-trade.js`와는 완전히 분리된 가상 시뮬레이션.
+- **실거래(`scripts/live-trade.js`)엔 아직 연결 안 됨.** 지금 실거래는 여전히
+  `scripts/lib/signals.js`의 double-bottom 패턴만 씀. 모의투자 결과가 좋으면 실거래
+  전환을 검토하기로 함 — 아래 "실거래 전환 체크리스트" 참고.
+- LONG/SHORT 둘 다 신호는 내지만, 백테스트 결과 **모의투자는 LONG만** 사용 (아래 참고).
+
+## 백테스트 결과 (150일/15분봉, in/out-of-sample 분리)
+
+R=2(목표=손절폭의 2배), 스톱은 스윕 극값 기준. 계좌 100 시작:
+
+| 조건 | 전체 | in-sample | out-of-sample |
+|---|---|---|---|
+| 양방향, 필터 없음 | 46.69 | 89.27 | 44.79 |
+| MSS만 (반전형) | 10.09 | 29.90 | 28.89 |
+| BOS만 (추세연속형) | 175.95 | 182.42 | 96.45 |
+| **LONG만** | **236.91** | **157.28** | **150.63** |
+| SHORT만 | 29.24 | 63.24 | 39.59 |
+
+- **LONG만 했을 때 R=1.5~4 전체 구간에서 in/out 양쪽 다 일관되게 수익** — 이 대화에서
+  나온 것 중 가장 견고한 패턴. R=2 기준 승률 44.3%(97건)지만 목표가 손절의 2배라
+  기대값은 +0.33R/건으로 정상.
+- **주의**: 이 150일이 BTC가 6.4만→7.8만까지 오른 상승장 구간이었음 — "롱이 원래
+  낫다"보다는 "이 기간엔 눌림목 매수가 잘 먹혔다"에 가까울 수 있음. 하락장/횡보장
+  데이터로 재검증 전까지는 방향성 엣지로 단정하지 말 것.
+- LONG+BOS를 동시에 필터링하면 표본이 너무 줄어(n≈20) 오히려 애매해짐 — LONG 단독
+  필터가 이미 충분하고, 굳이 MSS/BOS로 더 좁힐 필요 없음이 확인됨.
 
 ## 참고한 개념 (LuxAlgo 공개 인디케이터의 용어를 그대로 재구현한 것 — Pine 소스를 그대로
 포팅한 게 아니라 독립적으로 다시 짠 것)
@@ -65,14 +89,44 @@
 따로 그려줄 뿐, 조합은 트레이더 재량. 이 조합 로직(3단계를 하나의 신호로 묶는 것)은
 독자적으로 설계한 부분이라 백테스트로 직접 검증하는 것 외엔 확인할 방법이 없음.
 
-## 다음에 할 일 (제안)
+## 실거래 전환 체크리스트 (모의투자 성과 보고 결정)
 
-1. 이 저장소에 이미 있는 150일/15분봉 백테스트 하네스 패턴으로 실제 성과 검증
-   (승률/기대값/최대 드로다운, MSS-only vs BOS-only vs 둘 다, `fvgMinWidthATR` 값별
-   비교 포함) — double-bottom 때 했던 것과 동일한 방식.
-2. `SWING_STRENGTH` / `SWEEP_LOOKBACK` / `MSS_MAX_GAP` / `fvgMinWidthATR` 파라미터 스윕.
-3. (선택) 킬존 — 런던/뉴욕 특정 시간대에만 진입 허용하는 시간 필터. tradeforopp의
+**막혀있는 결정 하나**: double-bottom 봇과 **같은 Bitget 계좌·같은 심볼(BTCUSDT)** 을
+그대로 쓰면, 계좌가 원웨이(one-way) 모드라 두 봇의 포지션이 하나로 합쳐져 버려서
+"이 봇은 $300, 이 봇은 $70" 식의 독립 운용이 안 됨. 실거래 전환 전에 아래 중 하나를
+먼저 정해야 함:
+- **Bitget 하위계정/별도 계정 발급** (추천 — 완전히 물리적으로 분리됨)
+- **다른 심볼로 구분** (예: ETHUSDT — 단, 지금 검증은 전부 BTC 데이터라 그 심볼로
+  다시 백테스트 필요)
+- 위 둘 다 싫으면 포지션 통합(단일 봇, 신호 우선순위만 결정) — $ 분리 운용 포기
+
+**계정 문제가 정리되면, `scripts/live-trade-ict.js` 만들 때 이렇게 하면 됨** (지금
+`scripts/paper-trade-ict.js`가 정확히 이 로직으로 이미 검증된 상태라 포팅만 하면 됨):
+1. `scripts/live-trade.js`를 뼈대로 복사 — Bitget 계좌 연동/재시작 복구/git 커밋 구조는
+   이미 다 만들어져 있음, 진입 조건 부분만 갈아끼우면 됨.
+2. 신호 소스를 `scripts/lib/signals.js`의 `detectSignals()` 대신
+   `scripts/lib/ict-signals.js`의 `detectICTSignals()`로 교체, **`direction === "LONG"`만
+   필터**(SHORT 배제 — 백테스트 근거, 위 참고).
+3. `presetStopLossPrice` = `signal.sweepPrice`, `presetStopSurplusPrice` =
+   `entryPrice + (entryPrice - sweepPrice) * 2` (R=2). 지금 double-bottom처럼 고정
+   ±8%가 아니라 **매 신호마다 다른 폭**이 되는 게 정상 — 스윕 극값 기준 구조적 손절.
+4. `CANDLE_GRANULARITY = "15m"` 그대로 (백테스트·모의투자 다 15분봉 기준).
+5. 증거금은 이번에 논의한 대로 **고정 금액**(`BITGET_MARGIN_USDT` 환경변수)으로 —
+   지금 double-bottom처럼 "가용잔고의 95%"로 두면 두 전략이 잔고를 두고 서로 잠식함.
+6. 상태 파일은 `data/live-trades-ict.json`처럼 double-bottom과 다른 이름으로 분리,
+   대시보드 폴링 URL(`PAPER_TRADE_ICT_URL` 자리)도 그에 맞게 교체.
+
+**전환 전 최소 확인 사항**: 모의투자가 최소 며칠~몇 주치는 쌓여서 실제 라이브 데이터로도
+백테스트랑 비슷한 방향(양전, 롱 우세)이 나오는지 먼저 봐야 함 — 150일 백테스트 하나만
+믿고 바로 실거래로 가는 건 과최적화 위험 있음 (이 대화에서 double-bottom 튜닝할 때도
+in-sample만 좋고 out-of-sample에서 뒤집힌 사례가 여러 번 있었음).
+
+## 그 외 다음에 해볼 만한 것 (우선순위 낮음)
+
+1. `SWING_STRENGTH` / `SWEEP_LOOKBACK` / `MSS_MAX_GAP` / `fvgMinWidthATR` 파라미터 스윕
+   — 지금 값들은 첫 추정치, 아직 최적화 안 함.
+2. (선택) 킬존 — 런던/뉴욕 특정 시간대에만 진입 허용하는 시간 필터. tradeforopp의
    "ICT Killzones & Pivots"(MPL 2.0)에서 확인한 별개의 ICT 개념. LuxAlgo "ICT Killzones
    Toolkit"은 아예 킬존 밖에서는 구조 추적 자체를 리셋함(`if not inKZ: shift := 0`) —
    더 강한 버전.
-4. 검증되면 SHORT 지원 + 멀티 전략 동시 운용을 위해 `scripts/live-trade.js` 구조 변경 논의.
+3. 하락장/횡보장 구간 데이터로 재검증 (지금 150일은 상승장 위주 — 위 "주의" 참고).
