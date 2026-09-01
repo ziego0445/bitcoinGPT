@@ -36,6 +36,7 @@ interface IctSignal {
   sweepPrice: number
   mssIndex: number
   mssLevel: number
+  mssType: "MSS" | "BOS"
   fvgLow: number
   fvgHigh: number
   fvgFormedAt: number
@@ -117,8 +118,37 @@ function findFairValueGap(candles: Candle[], index: number, direction: "bullish"
   return null
 }
 
+// One forward pass classifying every structure break as "MSS" (first break in a new
+// direction — doubles as ICT's CHoCH, a trend reversal) or "BOS" (continues a trend
+// already underway). Mirrors LuxAlgo's ICT Concepts indicator's MSS.dir state machine —
+// see the matching comment in scripts/lib/ict-signals.js.
+function computeStructureBreaks(candles: Candle[], swingHighs: SwingPoint[], swingLows: SwingPoint[], strength: number) {
+  const breaks: { index: number; direction: "bullish" | "bearish"; level: number; type: "MSS" | "BOS" }[] = []
+  let trend = 0
+  let lastHighBroken: number | null = null
+  let lastLowBroken: number | null = null
+
+  for (let index = 0; index < candles.length; index += 1) {
+    const swingHigh = confirmedBy(swingHighs, index, strength).at(-1)
+    if (swingHigh && candles[index].close > swingHigh.price && swingHigh.price !== lastHighBroken) {
+      breaks.push({ index, direction: "bullish", level: swingHigh.price, type: trend <= 0 ? "MSS" : "BOS" })
+      trend = 1
+      lastHighBroken = swingHigh.price
+    }
+    const swingLow = confirmedBy(swingLows, index, strength).at(-1)
+    if (swingLow && candles[index].close < swingLow.price && swingLow.price !== lastLowBroken) {
+      breaks.push({ index, direction: "bearish", level: swingLow.price, type: trend >= 0 ? "MSS" : "BOS" })
+      trend = -1
+      lastLowBroken = swingLow.price
+    }
+  }
+  return breaks
+}
+
 function detectIctSignals(candles: Candle[]): IctSignal[] {
   const { highs: swingHighs, lows: swingLows } = getSwingPoints(candles)
+  const structureBreaks = computeStructureBreaks(candles, swingHighs, swingLows, SWING_STRENGTH)
+  const structureBreakType = new Map(structureBreaks.map((b) => [`${b.index}-${b.direction}`, b.type]))
   const signals: IctSignal[] = []
   const firedSetups = new Set<string>()
 
@@ -166,6 +196,7 @@ function detectIctSignals(candles: Candle[]): IctSignal[] {
         sweepPrice: sweep.extreme,
         mssIndex: mss.index,
         mssLevel: mss.brokenLevel,
+        mssType: structureBreakType.get(`${mss.index}-${sweep.direction}`) ?? "MSS",
         fvgLow: fvg.low,
         fvgHigh: fvg.high,
         fvgFormedAt: fvg.formedAt,
@@ -391,7 +422,7 @@ export default function IctStrategyChart() {
                 </div>
                 <p className="text-zinc-400">{signal.detail}</p>
                 <p className="mt-1.5 text-zinc-500">
-                  스윕 {formatPrice(signal.sweepPrice)} · MSS {formatPrice(signal.mssLevel)} · FVG {formatPrice(signal.fvgLow)}~{formatPrice(signal.fvgHigh)}
+                  스윕 {formatPrice(signal.sweepPrice)} · {signal.mssType} {formatPrice(signal.mssLevel)} · FVG {formatPrice(signal.fvgLow)}~{formatPrice(signal.fvgHigh)}
                 </p>
               </div>
             ))}
