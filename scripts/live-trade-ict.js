@@ -211,6 +211,19 @@ async function reconcilePosition(config, state, reports) {
 
   // No matching open report for a "recovered" position — closeReport() no-ops safely.
   closeReport(reports, opened.entryTime, { exitTime, exitPrice, exitReason, pnlPct });
+
+  await notify(
+    [
+      exitReason === "take-profit" ? "ICT 실전 포지션 익절 종료 (OKX)" : "ICT 실전 포지션 손절 종료 (OKX)",
+      opened.mssType ? `구조: ${opened.mssType}` : null,
+      `진입가: $${opened.entryPrice.toLocaleString()} → 청산가: $${exitPrice.toLocaleString()}`,
+      `손익: ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`,
+      `잔고: $${account.equity.toFixed(2)}`,
+      `시간: ${new Date(exitTime).toLocaleString("ko-KR")}`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
 }
 
 // See live-trade.js's identical helper for the "full"/fixed rationale.
