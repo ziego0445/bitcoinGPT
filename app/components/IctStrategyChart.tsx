@@ -698,9 +698,12 @@ export default function IctStrategyChart() {
         )}
       </section>
 
-      <section className="border-t border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-200">{isLive ? "실거래 기록 (OKX, LONG only)" : "모의투자 기록 ($100 시작, LONG only)"}</h2>
+      <section className="border-t border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Trade history</p>
+            <h2 className="mt-1 text-base font-semibold text-zinc-50">{isLive ? "실거래 결과 (OKX, LONG only)" : "모의투자 기록 ($100 시작, LONG only)"}</h2>
+          </div>
           {paperState && (
             <span className="text-xs text-zinc-500">
               시작 {formatTime(paperState.startedAt)} · {paperState.trades.length}건 체결
@@ -709,52 +712,63 @@ export default function IctStrategyChart() {
         </div>
         {!paperState ? (
           <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
-            모의투자 기록을 불러오는 중입니다...
+            {isLive ? "실거래 기록을 불러오는 중입니다..." : "모의투자 기록을 불러오는 중입니다..."}
           </div>
         ) : paperState.trades.length === 0 && !paperState.openPosition ? (
           <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
-            아직 체결된 모의 트레이드가 없습니다. LONG 신호가 뜨면 GitHub Actions가 5분 내로 자동 진입시킵니다.
+            {isLive
+              ? "아직 체결된 실거래 기록이 없습니다. LONG 신호가 뜨면 OKX 봇(scripts/live-trade-ict.js)이 30초 내로 자동 진입합니다."
+              : "아직 체결된 모의 트레이드가 없습니다. LONG 신호가 뜨면 GitHub Actions가 5분 내로 자동 진입시킵니다."}
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] border-collapse text-xs">
+            <table className="w-full min-w-[560px] border-collapse text-sm">
               <thead>
-                <tr className="border-b border-[#1f2b3a] text-left text-zinc-500">
-                  <th className="py-2 pr-3 font-medium">상태</th>
-                  <th className="py-2 pr-3 font-medium">진입</th>
-                  <th className="py-2 pr-3 font-medium">청산</th>
-                  <th className="py-2 pr-3 font-medium">진입가</th>
-                  <th className="py-2 pr-3 font-medium">청산가</th>
-                  <th className="py-2 pr-3 font-medium">손익</th>
-                  <th className="py-2 font-medium">MSS/BOS</th>
+                <tr className="border-b border-[#1c2733] text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+                  <th className="py-2 pr-3">상태</th>
+                  <th className="py-2 pr-3">진입</th>
+                  <th className="py-2 pr-3">청산</th>
+                  <th className="py-2 pr-3">손익</th>
+                  <th className="py-2">MSS/BOS</th>
                 </tr>
               </thead>
               <tbody>
                 {paperState.openPosition && (
-                  <tr className="border-b border-[#1a2432] text-amber-200">
-                    <td className="py-2 pr-3 font-semibold">보유중</td>
-                    <td className="py-2 pr-3 text-zinc-300">{formatTime(paperState.openPosition.entryTime)}</td>
-                    <td className="py-2 pr-3 text-zinc-600">-</td>
-                    <td className="py-2 pr-3 tabular-nums text-zinc-300">{formatPrice(paperState.openPosition.entryPrice)}</td>
-                    <td className="py-2 pr-3 text-zinc-600">-</td>
-                    <td className="py-2 pr-3 text-zinc-600">-</td>
-                    <td className="py-2 text-zinc-400">{paperState.openPosition.mssType}</td>
+                  <tr className="border-b border-[#161f29] text-amber-200">
+                    <td className="py-2.5 pr-3 font-semibold">보유중</td>
+                    <td className="py-2.5 pr-3 tabular-nums text-zinc-300">
+                      {formatPrice(paperState.openPosition.entryPrice)}
+                      <span className="ml-1 text-zinc-600">{formatTime(paperState.openPosition.entryTime)}</span>
+                    </td>
+                    <td className="py-2.5 pr-3 text-zinc-600">-</td>
+                    <td className="py-2.5 pr-3 text-zinc-600">-</td>
+                    <td className="py-2.5 text-zinc-400">{paperState.openPosition.mssType}</td>
                   </tr>
                 )}
                 {[...paperState.trades].reverse().map((trade) => {
                   const won = trade.exitReason === "take-profit"
                   return (
-                    <tr key={`${trade.entryTime}-${trade.exitTime}`} className="border-b border-[#1a2432]">
-                      <td className={`py-2 pr-3 font-semibold ${won ? "text-emerald-300" : "text-rose-300"}`}>{won ? "익절" : "손절"}</td>
-                      <td className="py-2 pr-3 text-zinc-400">{formatTime(trade.entryTime)}</td>
-                      <td className="py-2 pr-3 text-zinc-400">{formatTime(trade.exitTime)}</td>
-                      <td className="py-2 pr-3 tabular-nums text-zinc-300">{formatPrice(trade.entryPrice)}</td>
-                      <td className="py-2 pr-3 tabular-nums text-zinc-300">{formatPrice(trade.exitPrice)}</td>
-                      <td className={`py-2 pr-3 tabular-nums font-semibold ${trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                    <tr key={`${trade.entryTime}-${trade.exitTime}`} className="border-b border-[#161f29] last:border-0">
+                      <td className="py-2.5 pr-3">
+                        <span
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${won ? "bg-emerald-300/15 text-emerald-300" : "bg-rose-300/15 text-rose-300"}`}
+                        >
+                          {won ? "익절" : "손절"}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
+                        {formatPrice(trade.entryPrice)}
+                        <span className="ml-1 text-zinc-600">{formatTime(trade.entryTime)}</span>
+                      </td>
+                      <td className="py-2.5 pr-3 tabular-nums text-zinc-400">
+                        {formatPrice(trade.exitPrice)}
+                        <span className="ml-1 text-zinc-600">{formatTime(trade.exitTime)}</span>
+                      </td>
+                      <td className={`py-2.5 pr-3 tabular-nums font-semibold ${trade.pnlPct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
                         {trade.pnlPct >= 0 ? "+" : ""}
                         {trade.pnlPct.toFixed(2)}%
                       </td>
-                      <td className="py-2 text-zinc-500">{trade.mssType}</td>
+                      <td className="py-2.5 text-zinc-500">{trade.mssType}</td>
                     </tr>
                   )
                 })}
