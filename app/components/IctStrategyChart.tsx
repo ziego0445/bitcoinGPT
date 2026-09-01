@@ -65,32 +65,44 @@ function getSwingPoints(candles: Candle[], strength = SWING_STRENGTH) {
   return { highs, lows }
 }
 
-function findLiquiditySweep(swingLows: SwingPoint[], swingHighs: SwingPoint[], candles: Candle[], index: number) {
+// A swing point is only knowable `strength` candles after it prints — using it as if it
+// were known at its own index is lookahead bias. See the matching comment in
+// scripts/lib/ict-signals.js.
+function confirmedBy(points: SwingPoint[], atIndex: number, strength: number) {
+  return points.filter((p) => p.index + strength <= atIndex)
+}
+
+function findLiquiditySweep(swingLows: SwingPoint[], swingHighs: SwingPoint[], candles: Candle[], index: number, strength: number) {
   const candle = candles[index]
-  const priorLow = [...swingLows].reverse().find((p) => p.index < index)
+  const priorLow = confirmedBy(swingLows, index, strength).at(-1)
   if (priorLow && candle.low < priorLow.price && candle.close > priorLow.price) {
     return { direction: "bullish" as const, sweptIndex: priorLow.index, sweptPrice: priorLow.price, extreme: candle.low }
   }
-  const priorHigh = [...swingHighs].reverse().find((p) => p.index < index)
+  const priorHigh = confirmedBy(swingHighs, index, strength).at(-1)
   if (priorHigh && candle.high > priorHigh.price && candle.close < priorHigh.price) {
     return { direction: "bearish" as const, sweptIndex: priorHigh.index, sweptPrice: priorHigh.price, extreme: candle.high }
   }
   return null
 }
 
+// The reference level for a structure break has to already exist BEFORE the sweep that's
+// reversing it (the prior trend's last "lower high"/"higher low") — not a new peak/trough
+// forming during the post-sweep bounce itself. See the matching comment in
+// scripts/lib/ict-signals.js for the real-data case this was caught against.
 function findStructureBreak(
   swingHighs: SwingPoint[],
   swingLows: SwingPoint[],
   candles: Candle[],
-  fromIndex: number,
+  sweepIndex: number,
   toIndex: number,
   direction: "bullish" | "bearish",
+  strength: number,
 ) {
   if (direction === "bullish") {
-    const swingHigh = [...swingHighs].reverse().find((p) => p.index > fromIndex && p.index < toIndex)
+    const swingHigh = confirmedBy(swingHighs, sweepIndex, strength).at(-1)
     if (swingHigh && candles[toIndex].close > swingHigh.price) return { index: toIndex, brokenLevel: swingHigh.price }
   } else {
-    const swingLow = [...swingLows].reverse().find((p) => p.index > fromIndex && p.index < toIndex)
+    const swingLow = confirmedBy(swingLows, sweepIndex, strength).at(-1)
     if (swingLow && candles[toIndex].close < swingLow.price) return { index: toIndex, brokenLevel: swingLow.price }
   }
   return null
@@ -112,13 +124,13 @@ function detectIctSignals(candles: Candle[]): IctSignal[] {
 
   for (let index = SWING_STRENGTH * 2 + 5; index < candles.length; index += 1) {
     for (let sweepIndex = index; sweepIndex >= Math.max(0, index - SWEEP_LOOKBACK); sweepIndex -= 1) {
-      const sweep = findLiquiditySweep(swingLows, swingHighs, candles, sweepIndex)
+      const sweep = findLiquiditySweep(swingLows, swingHighs, candles, sweepIndex, SWING_STRENGTH)
       if (!sweep) continue
 
       let mss: { index: number; brokenLevel: number } | null = null
       let fvg: { low: number; high: number; formedAt: number } | null = null
       for (let k = sweepIndex + 1; k <= Math.min(index, sweepIndex + MSS_MAX_GAP); k += 1) {
-        if (!mss) mss = findStructureBreak(swingHighs, swingLows, candles, sweepIndex, k, sweep.direction)
+        if (!mss) mss = findStructureBreak(swingHighs, swingLows, candles, sweepIndex, k, sweep.direction, SWING_STRENGTH)
         if (mss && !fvg) {
           for (let f = mss.index; f >= sweepIndex + 2; f -= 1) {
             fvg = findFairValueGap(candles, f, sweep.direction)

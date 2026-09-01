@@ -40,36 +40,49 @@ function getSwingPoints(candles, strength = 2) {
   return { highs, lows };
 }
 
+// A swing point is only knowable `strength` candles after it prints (that's how many
+// candles on its right had to stay less extreme to confirm it) — using it as if it were
+// known at its own index is lookahead bias. Every lookup below goes through this so a
+// point can't be referenced before it would actually be confirmed live.
+function confirmedBy(points, atIndex, strength) {
+  return points.filter((p) => p.index + strength <= atIndex);
+}
+
 // A liquidity sweep: price wicks through a resting swing point but closes back on the
 // other side of it — the classic "stop hunt" right before a reversal. "bullish" sweeps a
 // swing LOW (grabs sell-side liquidity, sets up a LONG); "bearish" sweeps a swing HIGH
 // (grabs buy-side liquidity, sets up a SHORT).
-function findLiquiditySweep(swingLows, swingHighs, candles, index) {
+function findLiquiditySweep(swingLows, swingHighs, candles, index, strength) {
   const candle = candles[index];
-  const priorLow = [...swingLows].reverse().find((p) => p.index < index);
+  const priorLow = confirmedBy(swingLows, index, strength).at(-1);
   if (priorLow && candle.low < priorLow.price && candle.close > priorLow.price) {
     return { direction: "bullish", sweptIndex: priorLow.index, sweptPrice: priorLow.price, extreme: candle.low };
   }
-  const priorHigh = [...swingHighs].reverse().find((p) => p.index < index);
+  const priorHigh = confirmedBy(swingHighs, index, strength).at(-1);
   if (priorHigh && candle.high > priorHigh.price && candle.close < priorHigh.price) {
     return { direction: "bearish", sweptIndex: priorHigh.index, sweptPrice: priorHigh.price, extreme: candle.high };
   }
   return null;
 }
 
-// Market Structure Shift: price CLOSES beyond the most recent opposite-side swing point
-// after a sweep. ICT calls this CHoCH (change of character) when it reverses the
-// prevailing trend and BOS (break of structure) when it just continues one — this
-// function doesn't distinguish the two (that needs tracking the broader trend, left as a
-// future refinement); either way a close beyond that level is treated as confirmation.
-function findStructureBreak(swingHighs, swingLows, candles, fromIndex, toIndex, direction) {
+// Market Structure Shift: price CLOSES beyond the last swing point the PRIOR trend was
+// built on — the "lower high" a downtrend kept making (bullish break) or the "higher low"
+// an uptrend kept making (bearish break). That reference point has to already exist
+// before the sweep that's reversing it; it is NOT a new peak/trough forming during the
+// post-sweep bounce itself (an earlier version of this function searched forward from the
+// sweep and was picking up exactly that — a minor bump in the reaction leg, not the
+// structural level the reversal is actually supposed to invalidate).
+// ICT calls a break CHoCH when it reverses the prevailing trend and BOS when it just
+// continues one — this function doesn't distinguish the two (needs tracking the broader
+// trend, left as a future refinement); either way a close beyond the level counts.
+function findStructureBreak(swingHighs, swingLows, candles, sweepIndex, toIndex, direction, strength) {
   if (direction === "bullish") {
-    const swingHigh = [...swingHighs].reverse().find((p) => p.index > fromIndex && p.index < toIndex);
+    const swingHigh = confirmedBy(swingHighs, sweepIndex, strength).at(-1);
     if (swingHigh && candles[toIndex].close > swingHigh.price) {
       return { index: toIndex, brokenLevel: swingHigh.price };
     }
   } else {
-    const swingLow = [...swingLows].reverse().find((p) => p.index > fromIndex && p.index < toIndex);
+    const swingLow = confirmedBy(swingLows, sweepIndex, strength).at(-1);
     if (swingLow && candles[toIndex].close < swingLow.price) {
       return { index: toIndex, brokenLevel: swingLow.price };
     }
@@ -110,13 +123,13 @@ function detectICTSignals(candles, { swingStrength = 2 } = {}) {
 
   for (let index = swingStrength * 2 + 5; index < candles.length; index += 1) {
     for (let sweepIndex = index; sweepIndex >= Math.max(0, index - SWEEP_LOOKBACK); sweepIndex -= 1) {
-      const sweep = findLiquiditySweep(swingLows, swingHighs, candles, sweepIndex);
+      const sweep = findLiquiditySweep(swingLows, swingHighs, candles, sweepIndex, swingStrength);
       if (!sweep) continue;
 
       let mss = null;
       let fvg = null;
       for (let k = sweepIndex + 1; k <= Math.min(index, sweepIndex + MSS_MAX_GAP); k += 1) {
-        if (!mss) mss = findStructureBreak(swingHighs, swingLows, candles, sweepIndex, k, sweep.direction);
+        if (!mss) mss = findStructureBreak(swingHighs, swingLows, candles, sweepIndex, k, sweep.direction, swingStrength);
         if (mss && !fvg) {
           for (let f = mss.index; f >= sweepIndex + 2; f -= 1) {
             fvg = findFairValueGap(candles, f, sweep.direction);
