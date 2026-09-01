@@ -27,7 +27,7 @@ export default function StrategyTabs() {
             tab === "ict" ? "bg-fuchsia-400/20 text-fuchsia-200" : "bg-[#0c1119] text-zinc-500 hover:text-zinc-300"
           }`}
         >
-          ICT 전략 (실험적)
+          ICT 전략 (OKX)
         </button>
         <button
           onClick={() => setTab("reports")}

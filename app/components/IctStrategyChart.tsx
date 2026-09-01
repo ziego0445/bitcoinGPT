@@ -7,9 +7,11 @@ import { useEffect, useMemo, useState } from "react"
 // — see that file's header comment for the full rationale and current status. Same
 // "keep both copies in sync" convention as signals.js / BitcoinEntryChart.tsx.
 //
-// STATUS: first structural pass, NOT backtested, NOT connected to any live trading. This
-// component is a read-only reference/visualization tool so the detection logic can be
-// eyeballed against real charts before anyone considers wiring it up for real orders.
+// STATUS: backtested (150-day/15m BTC, LONG-only), live-traded for real on OKX via
+// scripts/live-trade-ict.js — see docs/ict-strategy.md. This component is read-only
+// (detects/displays signals, never places orders itself); it polls the real bot's state
+// file (LIVE_TRADE_ICT_URL below) once that exists, and falls back to the earlier $100
+// paper-trading state otherwise.
 
 type Timeframe = "5m" | "15m" | "1h" | "4h"
 type Direction = "LONG" | "SHORT"
@@ -18,6 +20,7 @@ interface PaperOpenPosition {
   pattern: string
   mssType: "MSS" | "BOS"
   leverage: number
+  size: number
   entryTime: number
   entryPrice: number
   stopLoss: number
@@ -309,6 +312,36 @@ function formatTime(time: number) {
   return new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(time))
 }
 
+function formatBalance(value: number) {
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+// Same small building blocks as BitcoinEntryChart.tsx's status panel (StatPill/StatTile) —
+// duplicated rather than imported since that file keeps them as unexported local
+// functions, but kept visually identical so both dashboards' "live status" panels read
+// the same way.
+function StatPill({ label, tone = "neutral" }: { label: string; tone?: "good" | "warn" | "neutral" }) {
+  const toneClass =
+    tone === "good"
+      ? "border-emerald-400/30 bg-emerald-300/10 text-emerald-200"
+      : tone === "warn"
+        ? "border-rose-400/30 bg-rose-300/10 text-rose-200"
+        : "border-[#28394b] bg-[#0a1017] text-zinc-300"
+
+  return <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${toneClass}`}>{label}</span>
+}
+
+function StatTile({ label, value, tone = "neutral", highlight = false }: { label: string; value: string; tone?: "good" | "bad" | "neutral"; highlight?: boolean }) {
+  const valueClass = tone === "good" ? "text-emerald-300" : tone === "bad" ? "text-rose-300" : "text-zinc-200"
+
+  return (
+    <div className={`flex-1 rounded-xl border px-3 py-2.5 text-center ${highlight ? "border-amber-400/40 bg-amber-300/5" : "border-[#1c2733] bg-[#080d13]"}`}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">{label}</p>
+      <p className={`mt-1 text-lg font-bold tabular-nums ${valueClass}`}>{value}</p>
+    </div>
+  )
+}
+
 const CHART = { width: 1200, height: 520, padding: { top: 16, right: 64, bottom: 24, left: 8 } }
 
 export default function IctStrategyChart() {
@@ -397,6 +430,14 @@ export default function IctStrategyChart() {
 
   const paperReturnPct = paperState ? ((paperState.currentBalance - paperState.startingBalance) / paperState.startingBalance) * 100 : null
   const paperEntryIndex = paperState?.openPosition ? indexAtTime(paperState.openPosition.entryTime) : -1
+  const currentPrice = candles.at(-1)?.close
+  const openUnrealizedPct =
+    paperState?.openPosition && currentPrice
+      ? ((currentPrice - paperState.openPosition.entryPrice) / paperState.openPosition.entryPrice) * paperState.openPosition.leverage * 100
+      : null
+  const closedTrades = paperState?.trades ?? []
+  const winCount = closedTrades.filter((trade) => trade.exitReason === "take-profit").length
+  const winRatePct = closedTrades.length ? (winCount / closedTrades.length) * 100 : null
 
   return (
     <div className="mx-auto flex max-w-[1360px] flex-col overflow-hidden rounded-2xl border border-[#1b2534] bg-[#0a0e15] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
@@ -460,6 +501,87 @@ export default function IctStrategyChart() {
           </>
         )}
       </div>
+
+      <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <StatPill label="유동성 스윕 → MSS/BOS → FVG (LONG only)" />
+          <StatPill label="10x 레버리지" />
+          <StatPill label="R=2 목표 (2R:1R)" />
+          <StatPill
+            label={winRatePct !== null ? `승률 ${winRatePct.toFixed(0)}% (${winCount}/${closedTrades.length})` : "승률 집계 전"}
+            tone={winRatePct === null ? "neutral" : winRatePct >= 50 ? "good" : "warn"}
+          />
+        </div>
+
+        <div className="mb-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+            {isLive
+              ? "Live trading · OKX 실계좌 · 유동성 스윕→MSS→FVG · 10x 레버리지 · R=2"
+              : "$100 모의투자 · 유동성 스윕→MSS→FVG · R=2"}
+          </p>
+          <h2 className="mt-0.5 text-sm font-semibold text-zinc-400">{isLive ? "실전매매 현황 (Live)" : "모의투자 현황"}</h2>
+          <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">비트코인 현재가</p>
+          <div className="mt-0.5">
+            <span className={`text-3xl font-bold leading-none tracking-tight ${isLive ? "text-rose-200" : "text-amber-200"}`}>
+              {currentPrice ? formatPrice(currentPrice) : "불러오는 중..."}
+            </span>
+          </div>
+        </div>
+
+        {paperState && (
+          <div className="mb-4 flex gap-2.5">
+            <StatTile label="시작 금액" value={formatBalance(paperState.startingBalance)} />
+            <StatTile label="현재 금액" value={formatBalance(paperState.currentBalance)} tone={(paperReturnPct ?? 0) >= 0 ? "good" : "bad"} highlight />
+            <StatTile
+              label="총 손익률"
+              value={`${(paperReturnPct ?? 0) >= 0 ? "+" : ""}${(paperReturnPct ?? 0).toFixed(2)}%`}
+              tone={(paperReturnPct ?? 0) >= 0 ? "good" : "bad"}
+            />
+          </div>
+        )}
+
+        {!paperState ? (
+          <p className="text-sm text-zinc-500">{isLive ? "실전매매 기록을 불러오는 중입니다..." : "모의투자 기록을 불러오는 중입니다..."}</p>
+        ) : paperState.openPosition ? (
+          <div className={`rounded-xl border px-4 py-3 ${isLive ? "border-rose-300/30 bg-rose-300/5" : "border-amber-300/30 bg-amber-300/5"}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-md px-2 py-1 text-[10px] font-bold text-[#061014] ${isLive ? "bg-rose-300/90" : "bg-amber-300/90"}`}>
+                  {isLive ? "실전 보유중" : "모의 보유중"}
+                </span>
+                <span className="rounded-md bg-[#1c2733] px-2 py-1 text-[10px] font-bold text-zinc-300">{paperState.openPosition.leverage}x</span>
+                <span className="text-xs text-zinc-400">
+                  {paperState.openPosition.mssType} · 투입 {formatBalance(paperState.openPosition.size)} · {formatTime(paperState.openPosition.entryTime)}
+                </span>
+              </div>
+              <span className={`text-sm font-semibold tabular-nums ${(openUnrealizedPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                {openUnrealizedPct !== null ? `${openUnrealizedPct >= 0 ? "+" : ""}${openUnrealizedPct.toFixed(2)}% 평가손익` : "-"}
+              </span>
+            </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-2 border-t border-white/10 pt-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">진입가</p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-amber-200">{formatPrice(paperState.openPosition.entryPrice)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">TP 익절가</p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-emerald-300">{formatPrice(paperState.openPosition.takeProfit)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">SL 손절가</p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-rose-300">{formatPrice(paperState.openPosition.stopLoss)}</p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">
+            {isLive
+              ? "현재 보유중인 실전 포지션이 없습니다. LONG 신호가 뜨면 OKX 봇(scripts/live-trade-ict.js)이 자동으로 진입합니다."
+              : "현재 보유중인 모의 포지션이 없습니다. LONG 신호가 뜨면 GitHub Actions가 자동으로 진입시킵니다."}
+          </div>
+        )}
+      </section>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[#1a2432] bg-[#0a0e15] px-5 py-3 text-[11px] lg:px-7">
         <span className="font-semibold text-zinc-500">차트 보는 법:</span>
