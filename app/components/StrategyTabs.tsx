@@ -3,8 +3,9 @@
 import { useState } from "react"
 import BitcoinEntryChart from "./BitcoinEntryChart"
 import IctStrategyChart from "./IctStrategyChart"
+import TradeReportsPanel from "./TradeReportsPanel"
 
-type Tab = "counter-trend" | "ict"
+type Tab = "counter-trend" | "ict" | "reports"
 
 export default function StrategyTabs() {
   const [tab, setTab] = useState<Tab>("counter-trend")
@@ -28,8 +29,16 @@ export default function StrategyTabs() {
         >
           ICT 전략 (실험적)
         </button>
+        <button
+          onClick={() => setTab("reports")}
+          className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+            tab === "reports" ? "bg-amber-400/20 text-amber-200" : "bg-[#0c1119] text-zinc-500 hover:text-zinc-300"
+          }`}
+        >
+          거래 리포트
+        </button>
       </div>
-      {tab === "counter-trend" ? <BitcoinEntryChart /> : <IctStrategyChart />}
+      {tab === "counter-trend" ? <BitcoinEntryChart /> : tab === "ict" ? <IctStrategyChart /> : <TradeReportsPanel />}
     </div>
   )
 }

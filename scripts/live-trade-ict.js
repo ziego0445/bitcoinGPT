@@ -31,6 +31,8 @@ const { execFileSync } = require("child_process");
 const { detectICTSignals } = require("./lib/ict-signals");
 const okx = require("./lib/okx-client");
 const { sendTelegram } = require("./lib/telegram");
+const { renderCandleSnapshot } = require("./lib/chart-snapshot");
+const { loadReports, saveReports, openReport, closeReport } = require("./lib/trade-reports");
 
 async function notify(text) {
   try {
@@ -45,8 +47,10 @@ const R_MULTIPLE = 2;
 const CANDLE_GRANULARITY = "15m";
 const CANDLE_LIMIT = 200;
 const POLL_INTERVAL_MS = 30_000;
+const CHART_SNAPSHOT_CANDLES = 60;
 const REPO_ROOT = path.join(__dirname, "..");
 const STATE_PATH = path.join(REPO_ROOT, "data", "live-trades-ict.json");
+const REPORTS_PATH = path.join(REPO_ROOT, "data", "trade-reports-ict.json");
 const GIT_OPTS = { cwd: REPO_ROOT, stdio: "pipe" };
 
 function log(...args) {
@@ -77,31 +81,35 @@ function saveState(state) {
 // See live-trade.js's identical field for why this stays out of the persisted state.
 let pushRetryNeeded = false;
 
-function persistState(state, changed) {
-  if (changed) saveState(state);
-  if (!changed && !pushRetryNeeded) return;
+// See live-trade.js's persistFiles() for the full rationale — same generalization to
+// cover both the state file and this bot's own trade-report journal in one commit.
+function persistFiles(files) {
+  const changedFiles = files.filter((f) => f.changed);
+  for (const file of changedFiles) file.save();
+  if (!changedFiles.length && !pushRetryNeeded) return;
 
   try {
-    if (changed) {
-      execFileSync("git", ["add", "data/live-trades-ict.json"], GIT_OPTS);
+    if (changedFiles.length) {
+      execFileSync("git", ["add", ...changedFiles.map((f) => f.path)], GIT_OPTS);
       execFileSync("git", ["commit", "-m", "Update ICT live-trade state [skip ci]"], GIT_OPTS);
     }
     execFileSync("git", ["pull", "--rebase", "origin", "main"], GIT_OPTS);
     execFileSync("git", ["push", "origin", "HEAD:main"], GIT_OPTS);
     log(pushRetryNeeded ? "Retried a previously failed push — succeeded." : "Committed and pushed ICT live-trade state.");
     pushRetryNeeded = false;
-    purgeJsDelivrCache();
+    for (const file of files) purgeJsDelivrCache(file.purgeUrl);
   } catch (error) {
     pushRetryNeeded = true;
     log("WARN: git commit/push failed, will retry next tick. Data is safe on disk either way.", error.message);
   }
 }
 
-const JSDELIVR_PURGE_URL = "https://purge.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades-ict.json";
+const STATE_PURGE_URL = "https://purge.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades-ict.json";
+const REPORTS_PURGE_URL = "https://purge.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/trade-reports-ict.json";
 
-async function purgeJsDelivrCache() {
+async function purgeJsDelivrCache(purgeUrl) {
   try {
-    const response = await fetch(JSDELIVR_PURGE_URL);
+    const response = await fetch(purgeUrl);
     if (!response.ok) throw new Error(`purge.jsdelivr.net ${response.status}`);
   } catch (error) {
     log("WARN: jsDelivr cache purge failed (dashboard may show stale state briefly):", error.message);
@@ -143,7 +151,7 @@ function adoptUntrackedPosition(state, position) {
 // against a real filled close on this account (no live order has been placed yet). Verify
 // on the first real close and adjust if needed, same caveat live-trade.js's Bitget version
 // carried until its own first live close confirmed the field names.
-async function reconcilePosition(config, state) {
+async function reconcilePosition(config, state, reports) {
   const position = await okx.getPosition(config);
 
   if (position && !state.openPosition) {
@@ -200,6 +208,9 @@ async function reconcilePosition(config, state) {
   state.currentBalance = account.equity;
   state.openPosition = null;
   log(`Position closed: ${exitReason} @ ${exitPrice} (pnl ${pnlPct.toFixed(2)}%)`);
+
+  // No matching open report for a "recovered" position — closeReport() no-ops safely.
+  closeReport(reports, opened.entryTime, { exitTime, exitPrice, exitReason, pnlPct });
 }
 
 // See live-trade.js's identical helper for the "full"/fixed rationale.
@@ -209,7 +220,22 @@ async function resolveMarginUsdt(config) {
   return Math.max(account.available * 0.95, 0);
 }
 
-async function maybeEnter(config, contract, state, closedCandles, signals) {
+// Composes the "why did we enter" writeup straight from the signal's own three-step
+// evidence (sweep -> MSS/BOS -> FVG) — same no-new-reasoning-invented approach as
+// live-trade.js's buildReasonText().
+function buildReasonText(signal, closedCandles) {
+  const sweepTime = closedCandles[signal.sweepIndex]?.time;
+  const mssTime = closedCandles[signal.mssIndex]?.time;
+  return [
+    `패턴: ICT 유동성 스윕 → ${signal.mssType} → FVG 진입 (LONG)`,
+    signal.detail,
+    `① 유동성 스윕: ${sweepTime ? new Date(sweepTime).toLocaleString("ko-KR") : "-"} · $${signal.sweepPrice.toLocaleString()}`,
+    `② ${signal.mssType}: ${mssTime ? new Date(mssTime).toLocaleString("ko-KR") : "-"} · $${signal.mssLevel.toLocaleString()}`,
+    `③ FVG 구간: $${signal.fvgLow.toLocaleString()} ~ $${signal.fvgHigh.toLocaleString()}`,
+  ].join("\n");
+}
+
+async function maybeEnter(config, contract, state, closedCandles, signals, reports) {
   if (state.openPosition) return;
 
   const latestCandle = closedCandles[closedCandles.length - 1];
@@ -279,6 +305,43 @@ async function maybeEnter(config, contract, state, closedCandles, signals) {
 
   log(`Entered LONG @ ${entryPrice} (orderId ${order.ordId}), TP ${takeProfit.toFixed(1)} / SL ${stopLoss.toFixed(1)}`);
 
+  // Map the signal's sweep/MSS candle indices (against the full closedCandles series)
+  // onto the trimmed snapshot window so their markers land on the right candle.
+  const snapshotCandles = closedCandles.slice(-CHART_SNAPSHOT_CANDLES);
+  const snapshotOffset = closedCandles.length - snapshotCandles.length;
+  const toSnapshotIndex = (index) => index - snapshotOffset;
+  const markers = [{ index: snapshotCandles.length - 1, color: "#facc15", label: "B" }];
+  const sweepSnapIndex = toSnapshotIndex(latest.sweepIndex);
+  if (sweepSnapIndex >= 0) markers.push({ index: sweepSnapIndex, color: "#f472b6", label: "①스윕" });
+  const mssSnapIndex = toSnapshotIndex(latest.mssIndex);
+  if (mssSnapIndex >= 0) markers.push({ index: mssSnapIndex, color: "#22d3ee", label: `②${latest.mssType}` });
+
+  const chartSvg = renderCandleSnapshot({
+    candles: snapshotCandles,
+    title: `BTC-USDT-SWAP 15m · ${new Date(entryTime).toLocaleString("ko-KR")}`,
+    markers,
+    lines: [
+      { price: takeProfit, color: "#4ade80", label: `TP ${takeProfit.toFixed(1)}` },
+      { price: stopLoss, color: "#f43f5e", label: `SL ${stopLoss.toFixed(1)}` },
+      { price: latest.fvgLow, color: "#a78bfa", label: "FVG low" },
+      { price: latest.fvgHigh, color: "#a78bfa", label: "FVG high" },
+    ],
+  });
+
+  openReport(reports, {
+    id: `ict-${entryTime}`,
+    bot: "ict",
+    pattern: "ict-fvg",
+    mssType: latest.mssType,
+    reasonSummary: `유동성 스윕 → ${latest.mssType} → FVG 진입`,
+    reasonDetail: buildReasonText(latest, closedCandles),
+    entryTime,
+    entryPrice,
+    takeProfit,
+    stopLoss,
+    chartSvg,
+  });
+
   await notify(
     [
       "ICT 실전 포지션 진입 (OKX)",
@@ -293,8 +356,9 @@ async function maybeEnter(config, contract, state, closedCandles, signals) {
 
 let contractConfigCache = null;
 
-async function tick(config, state) {
-  const before = JSON.stringify(state);
+async function tick(config, state, reports) {
+  const stateBefore = JSON.stringify(state);
+  const reportsBefore = JSON.stringify(reports);
 
   if (state.startingBalance == null) {
     const account = await okx.getAccount(config);
@@ -306,23 +370,40 @@ async function tick(config, state) {
   const closedCandles = candles.slice(0, -1); // last candle is still forming
   const signals = detectICTSignals(closedCandles).filter((s) => s.direction === "LONG");
 
-  await reconcilePosition(config, state);
+  await reconcilePosition(config, state, reports);
 
   if (!contractConfigCache) {
     contractConfigCache = await okx.getContractConfig(config);
   }
 
   if (!state.openPosition) {
-    await maybeEnter(config, contractConfigCache, state, closedCandles, signals);
+    await maybeEnter(config, contractConfigCache, state, closedCandles, signals, reports);
   }
 
-  persistState(state, JSON.stringify(state) !== before);
+  persistFiles([
+    { path: "data/live-trades-ict.json", changed: JSON.stringify(state) !== stateBefore, save: () => saveState(state), purgeUrl: STATE_PURGE_URL },
+    {
+      path: "data/trade-reports-ict.json",
+      changed: JSON.stringify(reports) !== reportsBefore,
+      save: () => saveReports(REPORTS_PATH, reports),
+      purgeUrl: REPORTS_PURGE_URL,
+    },
+  ]);
 }
 
-async function reconcileOnStartup(config, state) {
-  const before = JSON.stringify(state);
-  await reconcilePosition(config, state);
-  if (JSON.stringify(state) !== before) persistState(state, true);
+async function reconcileOnStartup(config, state, reports) {
+  const stateBefore = JSON.stringify(state);
+  const reportsBefore = JSON.stringify(reports);
+  await reconcilePosition(config, state, reports);
+  persistFiles([
+    { path: "data/live-trades-ict.json", changed: JSON.stringify(state) !== stateBefore, save: () => saveState(state), purgeUrl: STATE_PURGE_URL },
+    {
+      path: "data/trade-reports-ict.json",
+      changed: JSON.stringify(reports) !== reportsBefore,
+      save: () => saveReports(REPORTS_PATH, reports),
+      purgeUrl: REPORTS_PURGE_URL,
+    },
+  ]);
 }
 
 async function main() {
@@ -334,14 +415,15 @@ async function main() {
   log("Account setup (non-fatal if a position is already open):", setup);
 
   const state = loadState();
-  await reconcileOnStartup(config, state);
+  const reports = loadReports(REPORTS_PATH);
+  await reconcileOnStartup(config, state, reports);
 
   let tickInFlight = false;
   async function runTick() {
     if (tickInFlight) return;
     tickInFlight = true;
     try {
-      await tick(config, state);
+      await tick(config, state, reports);
     } catch (error) {
       log("ERROR during tick (loop continues):", error.message);
     } finally {

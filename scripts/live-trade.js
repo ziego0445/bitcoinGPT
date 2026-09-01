@@ -19,9 +19,11 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { detectSignals, signalTitle } = require("./lib/signals");
+const { detectSignals, signalTitle, signalReasons } = require("./lib/signals");
 const bitget = require("./lib/bitget-client");
 const { sendTelegram } = require("./lib/telegram");
+const { renderCandleSnapshot } = require("./lib/chart-snapshot");
+const { loadReports, saveReports, openReport, closeReport } = require("./lib/trade-reports");
 
 // Telegram notification is best-effort — a Telegram outage must never block or crash the
 // trading loop, so every call site awaits this wrapper instead of sendTelegram() directly.
@@ -60,8 +62,10 @@ const ALERT_MIN_SCORE = 85;
 const CANDLE_GRANULARITY = "15m";
 const CANDLE_LIMIT = 200;
 const POLL_INTERVAL_MS = 30_000;
+const CHART_SNAPSHOT_CANDLES = 60;
 const REPO_ROOT = path.join(__dirname, "..");
 const STATE_PATH = path.join(REPO_ROOT, "data", "live-trades.json");
+const REPORTS_PATH = path.join(REPO_ROOT, "data", "trade-reports-bitget.json");
 const GIT_OPTS = { cwd: REPO_ROOT, stdio: "pipe" };
 
 function log(...args) {
@@ -99,42 +103,49 @@ function saveState(state) {
 // means a failed push leaves the working tree exactly as clean as the last real commit.
 let pushRetryNeeded = false;
 
-// Only touches git when the state actually changed (or a previous push failed and needs
+// Only touches git when something actually changed (or a previous push failed and needs
 // a retry) — mirrors paper-trade.js's "don't spam commits on idle ticks" principle.
-function persistState(state, changed) {
-  if (changed) saveState(state);
-  if (!changed && !pushRetryNeeded) return;
+// `files`: [{ path: "data/live-trades.json", changed, save, purgeUrl }, ...] — a single
+// entry per tracked file. One commit covers whichever files changed this tick (state and
+// a trade report can both change in the same tick, at the moment of entry/exit) instead
+// of committing twice.
+function persistFiles(files) {
+  const changedFiles = files.filter((f) => f.changed);
+  for (const file of changedFiles) file.save();
+  if (!changedFiles.length && !pushRetryNeeded) return;
 
   try {
-    if (changed) {
-      execFileSync("git", ["add", "data/live-trades.json"], GIT_OPTS);
+    if (changedFiles.length) {
+      execFileSync("git", ["add", ...changedFiles.map((f) => f.path)], GIT_OPTS);
       execFileSync("git", ["commit", "-m", "Update live-trade state [skip ci]"], GIT_OPTS);
     }
     execFileSync("git", ["pull", "--rebase", "origin", "main"], GIT_OPTS);
     execFileSync("git", ["push", "origin", "HEAD:main"], GIT_OPTS);
     log(pushRetryNeeded ? "Retried a previously failed push — succeeded." : "Committed and pushed live-trade state.");
     pushRetryNeeded = false;
-    // Fire-and-forget: purgeJsDelivrCache() handles its own errors and persistState()
-    // stays synchronous, matching its existing call sites (neither awaits it).
-    purgeJsDelivrCache();
+    // Purge every tracked file's CDN cache on any successful push, not just the ones that
+    // changed this specific tick — a retried push can carry an earlier tick's change that
+    // never got purged the first time around. Fire-and-forget, same as before.
+    for (const file of files) purgeJsDelivrCache(file.purgeUrl);
   } catch (error) {
     pushRetryNeeded = true;
     log("WARN: git commit/push failed, will retry next tick. Data is safe on disk either way.", error.message);
   }
 }
 
-// The dashboard reads data/live-trades.json through jsDelivr's GitHub CDN mirror, not
+// The dashboard reads these files through jsDelivr's GitHub CDN mirror, not
 // raw.githubusercontent.com directly — GitHub's raw-content endpoint anti-scraping limits
 // were 429-ing real site visitors. jsDelivr caches its GitHub mirror rather than fetching
 // on every request, so without this the dashboard would show stale state until jsDelivr's
 // own cache window elapsed. Best-effort like notify(): a purge failure must never block or
 // crash the trading loop — the next successful purge (or jsDelivr's normal cache expiry)
 // catches it up.
-const JSDELIVR_PURGE_URL = "https://purge.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades.json";
+const STATE_PURGE_URL = "https://purge.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/live-trades.json";
+const REPORTS_PURGE_URL = "https://purge.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/trade-reports-bitget.json";
 
-async function purgeJsDelivrCache() {
+async function purgeJsDelivrCache(purgeUrl) {
   try {
-    const response = await fetch(JSDELIVR_PURGE_URL);
+    const response = await fetch(purgeUrl);
     if (!response.ok) throw new Error(`purge.jsdelivr.net ${response.status}`);
   } catch (error) {
     log("WARN: jsDelivr cache purge failed (dashboard may show stale state briefly):", error.message);
@@ -182,7 +193,7 @@ function adoptUntrackedPosition(state, position) {
 // actually matches on this account. Left in as a harmless no-op in case Bitget ever
 // returns that value for a different order type; `reduceOnly === "YES"` and
 // `side === "sell"` are the fallbacks that actually do the work here.
-async function reconcilePosition(config, state) {
+async function reconcilePosition(config, state, reports) {
   const position = await bitget.getSinglePosition(config);
 
   if (position && !state.openPosition) {
@@ -251,6 +262,10 @@ async function reconcilePosition(config, state) {
   state.currentBalance = account.equity;
   state.openPosition = null;
   log(`Position closed: ${exitReason} @ ${exitPrice} (pnl ${pnlPct.toFixed(2)}%)`);
+
+  // No matching open report for a "recovered" position (see adoptUntrackedPosition — it
+  // never had a report opened for it in the first place) — closeReport() no-ops safely.
+  closeReport(reports, opened.entryTime, { exitTime, exitPrice, exitReason, pnlPct });
 }
 
 // BITGET_MARGIN_USDT unset/"full" (config.marginUsdt === null) means "use whatever the
@@ -264,7 +279,19 @@ async function resolveMarginUsdt(config) {
   return Math.max(account.available * 0.95, 0);
 }
 
-async function maybeEnter(config, contract, state, closedCandles, events) {
+// Composes the "why did we enter" writeup for the trade-report journal, straight from
+// what detectSignals() already computed for this signal — no new reasoning invented here,
+// just the pattern's own title/detail/bullet reasons (signalReasons()) plus the reference
+// level double-bottom/key-candle stake their thesis on (structureLevel), if any.
+function buildReasonText(signal) {
+  const lines = [`패턴: ${signalTitle(signal.pattern)} (score ${Math.round(signal.score)})`, signal.detail];
+  const reasons = signalReasons(signal.pattern);
+  if (reasons.length) lines.push(...reasons.map((reason) => `- ${reason}`));
+  if (signal.structureLevel != null) lines.push(`기준 레벨(구조적 참조가): $${signal.structureLevel.toLocaleString()}`);
+  return lines.join("\n");
+}
+
+async function maybeEnter(config, contract, state, closedCandles, events, reports) {
   if (state.openPosition) return;
 
   const latest = events.at(-1);
@@ -336,6 +363,32 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
 
   log(`Entered LONG @ ${entryPrice} (orderId ${order.orderId}), TP ${takeProfit.toFixed(1)} / SL ${stopLoss.toFixed(1)}`);
 
+  const snapshotCandles = closedCandles.slice(-CHART_SNAPSHOT_CANDLES);
+  const chartSvg = renderCandleSnapshot({
+    candles: snapshotCandles,
+    title: `BTCUSDT 15m · ${new Date(entryTime).toLocaleString("ko-KR")}`,
+    markers: [{ index: snapshotCandles.length - 1, color: "#f472b6", label: "B" }],
+    lines: [
+      { price: takeProfit, color: "#4ade80", label: `TP ${takeProfit.toFixed(1)}` },
+      { price: stopLoss, color: "#f43f5e", label: `SL ${stopLoss.toFixed(1)}` },
+      ...(latest.structureLevel != null ? [{ price: latest.structureLevel, color: "#22d3ee", label: "기준가" }] : []),
+    ],
+  });
+
+  openReport(reports, {
+    id: `bitget-${entryTime}`,
+    bot: "bitget",
+    pattern: latest.pattern,
+    score: latest.score,
+    reasonSummary: signalTitle(latest.pattern),
+    reasonDetail: buildReasonText(latest),
+    entryTime,
+    entryPrice,
+    takeProfit,
+    stopLoss,
+    chartSvg,
+  });
+
   await notify(
     [
       "실전 포지션 진입",
@@ -350,8 +403,9 @@ async function maybeEnter(config, contract, state, closedCandles, events) {
 
 let contractConfigCache = null;
 
-async function tick(config, state) {
-  const before = JSON.stringify(state);
+async function tick(config, state, reports) {
+  const stateBefore = JSON.stringify(state);
+  const reportsBefore = JSON.stringify(reports);
 
   if (state.startingBalance == null) {
     const account = await bitget.getAccount(config);
@@ -363,27 +417,44 @@ async function tick(config, state) {
   const closedCandles = candles.slice(0, -1); // last candle is still forming
   const events = detectSignals(closedCandles);
 
-  await reconcilePosition(config, state);
+  await reconcilePosition(config, state, reports);
 
   if (!contractConfigCache) {
     contractConfigCache = await bitget.getContractConfig(config);
   }
 
   if (!state.openPosition) {
-    await maybeEnter(config, contractConfigCache, state, closedCandles, events);
+    await maybeEnter(config, contractConfigCache, state, closedCandles, events, reports);
   }
 
-  persistState(state, JSON.stringify(state) !== before);
+  persistFiles([
+    { path: "data/live-trades.json", changed: JSON.stringify(state) !== stateBefore, save: () => saveState(state), purgeUrl: STATE_PURGE_URL },
+    {
+      path: "data/trade-reports-bitget.json",
+      changed: JSON.stringify(reports) !== reportsBefore,
+      save: () => saveReports(REPORTS_PATH, reports),
+      purgeUrl: REPORTS_PURGE_URL,
+    },
+  ]);
 }
 
 // Runs once at boot, before the interval starts, so a restart mid-trade never causes a
 // duplicate entry — the exchange's real position always overrides local assumptions.
 // Just the regular per-tick reconciliation (see reconcilePosition above), forced to
 // persist immediately rather than waiting for tick()'s own before/after diff.
-async function reconcileOnStartup(config, state) {
-  const before = JSON.stringify(state);
-  await reconcilePosition(config, state);
-  if (JSON.stringify(state) !== before) persistState(state, true);
+async function reconcileOnStartup(config, state, reports) {
+  const stateBefore = JSON.stringify(state);
+  const reportsBefore = JSON.stringify(reports);
+  await reconcilePosition(config, state, reports);
+  persistFiles([
+    { path: "data/live-trades.json", changed: JSON.stringify(state) !== stateBefore, save: () => saveState(state), purgeUrl: STATE_PURGE_URL },
+    {
+      path: "data/trade-reports-bitget.json",
+      changed: JSON.stringify(reports) !== reportsBefore,
+      save: () => saveReports(REPORTS_PATH, reports),
+      purgeUrl: REPORTS_PURGE_URL,
+    },
+  ]);
 }
 
 async function main() {
@@ -398,14 +469,15 @@ async function main() {
   log("Account setup (non-fatal if a position is already open):", setup);
 
   const state = loadState();
-  await reconcileOnStartup(config, state);
+  const reports = loadReports(REPORTS_PATH);
+  await reconcileOnStartup(config, state, reports);
 
   let tickInFlight = false;
   async function runTick() {
     if (tickInFlight) return; // previous tick's HTTP calls are still in flight — skip, don't overlap
     tickInFlight = true;
     try {
-      await tick(config, state);
+      await tick(config, state, reports);
     } catch (error) {
       log("ERROR during tick (loop continues):", error.message);
     } finally {
