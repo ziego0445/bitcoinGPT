@@ -737,6 +737,69 @@ export default function IctStrategyChart() {
           </div>
         )}
       </section>
+
+      <section className="border-t border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
+        <h2 className="mb-1 text-sm font-semibold text-zinc-200">ICT 용어 설명 — 왜 이 자리에서 진입하는가</h2>
+        <p className="mb-4 text-xs text-zinc-500">
+          위 차트의 ①②③ 번호, &ldquo;최근 후보 신호&rdquo; 카드, 모의투자 표에 나오는 용어들을 하나씩 풀어서 설명합니다.
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border p-4 text-xs" style={{ borderColor: "#f472b680", backgroundColor: "rgba(244,114,182,0.05)" }}>
+            <p className="mb-1.5 text-sm font-bold" style={{ color: "#f472b6" }}>
+              ① 유동성 스윕 (Liquidity Sweep)
+            </p>
+            <p className="text-zinc-400">
+              직전 저점/고점 바로 아래·위에는 손절 주문과 돌파 매매 주문이 몰려 있습니다(&ldquo;유동성 풀&rdquo;). 가격이 그 레벨을 <strong className="text-zinc-300">꼬리로 살짝 뚫었다가 종가는 다시 안으로 들어오면</strong>, 그 주문들만 체결시키고(스탑헌팅) 방향을 트는 전형적인 움직임으로 봅니다.
+            </p>
+            <p className="mt-1.5 text-zinc-500">
+              → 이 레벨 아래(위)에 있던 매도(숏) 물량이 소진되고, 그걸 누군가 받아내며 반대 포지션을 만들었을 가능성 — 여기서 &ldquo;왜 반전 후보인지&rdquo;가 시작됩니다.
+            </p>
+          </div>
+
+          <div className="rounded-xl border p-4 text-xs" style={{ borderColor: "#22d3ee80", backgroundColor: "rgba(34,211,238,0.05)" }}>
+            <p className="mb-1.5 text-sm font-bold text-cyan-300">② 구조 전환 MSS(CHoCH) / BOS</p>
+            <p className="text-zinc-400">
+              <strong className="text-zinc-300">MSS(Market Structure Shift, = CHoCH)</strong>: 지금까지의 추세가 만들어온 마지막 고점(또는 저점)을 <strong className="text-zinc-300">종가로</strong> 넘어서는 것 — 추세가 실제로 꺾였다는 확인.
+              <br />
+              <strong className="text-zinc-300">BOS(Break of Structure)</strong>: 이미 진행 중이던 방향으로 구조를 한 번 더 갱신 — 추세가 아직 살아있다는 확인.
+            </p>
+            <p className="mt-1.5 text-zinc-500">
+              → 스윕만으론 &ldquo;잠깐 흔들린 것&rdquo;인지 &ldquo;진짜 반전/지속&rdquo;인지 알 수 없습니다. 종가로 구조가 실제로 깨져야 시장 참여자들도 그 방향을 인정한 것으로 봅니다.
+            </p>
+          </div>
+
+          <div className="rounded-xl border p-4 text-xs" style={{ borderColor: "#22d3ee80", backgroundColor: "rgba(34,211,238,0.05)" }}>
+            <p className="mb-1.5 text-sm font-bold text-cyan-300">FVG (Fair Value Gap, 공정가치 갭)</p>
+            <p className="text-zinc-400">
+              연속된 3개 캔들에서 <strong className="text-zinc-300">1번째 캔들과 3번째 캔들 사이에 가격이 아예 거래되지 않은 빈 구간</strong>이 생기는 경우 — 가운데 캔들이 그만큼 강하고 급하게 한 방향으로 튀었다는 뜻입니다.
+            </p>
+            <p className="mt-1.5 text-zinc-500">
+              → 너무 급하게 지나가서 매수/매도 주문이 제대로 안 채워진 자리라, 시장이 나중에 그 구간을 &ldquo;메우러&rdquo; 되돌아오는 경우가 많습니다. 그 순간이 추세에 올라타면서도 손절은 가깝게 둘 수 있는 진입가입니다.
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-[#263545] bg-[#080d13] p-4 text-xs">
+            <p className="mb-1.5 text-sm font-bold text-amber-200">R배수 / 손절·목표가</p>
+            <p className="text-zinc-400">
+              <strong className="text-zinc-300">R</strong> = 진입가와 손절가(스윕 극값) 사이의 거리, 즉 이 트레이드에서 감수하는 위험 1단위. <strong className="text-zinc-300">&ldquo;목표 2R&rdquo;</strong>은 그 위험폭의 2배만큼 이익을 목표로 잡는다는 뜻입니다.
+            </p>
+            <p className="mt-1.5 text-zinc-500">
+              → 승률이 50%가 안 돼도(백테스트 기준 약 44%) 이길 때 2배씩 벌기 때문에 장기적으로는 기대값이 플러스가 될 수 있습니다. 승률만 보면 낮아 보여도 정상입니다.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-[#263545] bg-[#080d13] p-4 text-xs text-zinc-400">
+          <p className="mb-1 text-sm font-bold text-zinc-200">왜 셋 다 확인돼야 진입하는가</p>
+          <p>
+            <span style={{ color: "#f472b6" }}>①스윕</span>은 &ldquo;여기서 뭔가 큰 게 일어났다&rdquo;는 신호일 뿐이고, 되돌림일 수도 그냥 소음일 수도 있습니다.{" "}
+            <span className="text-cyan-300">②구조 전환</span>이 종가로 확인돼야 그 스윕이 진짜 방향 전환(또는 지속)으로 이어졌다는 게 검증됩니다. 그 다음{" "}
+            <span className="text-cyan-300">③FVG 되돌림</span>을 기다리는 이유는, 이미 다 오른(내린) 가격에 뒤늦게 뛰어드는 대신 <strong className="text-zinc-300">손절은 가깝고(스윕 극값) 목표는 먼(2R)</strong> — 위험 대비 보상이 좋은 자리까지 가격이 돌아오길 기다리기 위해서입니다.
+            셋 중 하나라도 안 나오면(예: 스윕은 있는데 구조가 안 깨짐) 진입하지 않습니다 — &ldquo;그냥 잠깐 흔들린 것&rdquo;일 가능성이 더 크기 때문입니다.
+          </p>
+        </div>
+      </section>
     </div>
   )
 }
