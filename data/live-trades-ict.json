@@ -4,6 +4,16 @@
   "startingBalance": 100.14371825213074,
   "currentBalance": 100.14371825213074,
   "startedAt": 1788241196732,
-  "openPosition": null,
+  "openPosition": {
+    "pattern": "ict-fvg",
+    "mssType": "MSS",
+    "leverage": 10,
+    "size": 95.1290254822742,
+    "entryTime": 1788272123749,
+    "entryPrice": 78274.7,
+    "takeProfit": 79340.90000000001,
+    "stopLoss": 77685.5,
+    "orderId": "3884587323220480000"
+  },
   "trades": []
 }
