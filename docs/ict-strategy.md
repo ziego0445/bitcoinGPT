@@ -33,6 +33,12 @@
 3. **FVG (Fair Value Gap)**: 스윕~MSS 사이 임펄스 구간에서 3봉 갭(`i-2`와 `i` 캔들이 안
    겹치는 구간)을 찾고, 이후 캔들이 그 갭 안으로 다시 들어오는 순간을 진입 트리거로 봄.
    같은 셋업이 여러 봉에 걸쳐 반복 터치되는 건 최초 1회만 신호로 인정(`firedSetups`).
+   LuxAlgo "ICT Killzones Toolkit" 원본의 실제 FVG 로직(`pFVG()`)과 대조해서 2가지 조건을
+   추가함: **디스플레이스먼트**(가운데 임펄스 캔들의 종가가 갭 경계를 실제로 넘어서야
+   함 — 항상 적용, 실데이터로 검증해보니 신호 수 변화 없이 정의만 더 정확해짐) 및
+   **최소 갭 폭**(ATR(14) 대비 배수 필터, `fvgMinWidthATR` 옵션 — 원본 기본값 `1.2×ATR(144)`
+   를 그대로 15분봉에 적용하면 신호가 0개로 죽어서, 기본값은 꺼둠(0) 두고 백테스트로
+   나중에 정하기로 함).
 
 무효화 조건: MSS 확정 이후 가격이 FVG를 터치하기 전에 스윕의 극값(저점/고점)을 다시
 깨면 그 셋업은 폐기.
@@ -55,11 +61,11 @@
 ## 다음에 할 일 (제안)
 
 1. 이 저장소에 이미 있는 150일/15분봉 백테스트 하네스 패턴으로 실제 성과 검증
-   (승률/기대값/최대 드로다운, MSS-only vs BOS-only vs 둘 다 비교 포함) — double-bottom
-   때 했던 것과 동일한 방식.
-2. `SWING_STRENGTH` / `SWEEP_LOOKBACK` / `MSS_MAX_GAP` 파라미터 스윕.
-3. FVG를 만드는 가운데(임펄스) 캔들이 실제 "큰 몸통"이어야 한다는 필터 추가 검토 —
-   LuxAlgo 원본은 이 조건이 있는데 지금 구현엔 없음.
-4. (선택) 킬존 — 런던/뉴욕 특정 시간대에만 진입 허용하는 시간 필터. tradeforopp의
-   "ICT Killzones & Pivots"(MPL 2.0)에서 확인한 별개의 ICT 개념.
-5. 검증되면 SHORT 지원 + 멀티 전략 동시 운용을 위해 `scripts/live-trade.js` 구조 변경 논의.
+   (승률/기대값/최대 드로다운, MSS-only vs BOS-only vs 둘 다, `fvgMinWidthATR` 값별
+   비교 포함) — double-bottom 때 했던 것과 동일한 방식.
+2. `SWING_STRENGTH` / `SWEEP_LOOKBACK` / `MSS_MAX_GAP` / `fvgMinWidthATR` 파라미터 스윕.
+3. (선택) 킬존 — 런던/뉴욕 특정 시간대에만 진입 허용하는 시간 필터. tradeforopp의
+   "ICT Killzones & Pivots"(MPL 2.0)에서 확인한 별개의 ICT 개념. LuxAlgo "ICT Killzones
+   Toolkit"은 아예 킬존 밖에서는 구조 추적 자체를 리셋함(`if not inKZ: shift := 0`) —
+   더 강한 버전.
+4. 검증되면 SHORT 지원 + 멀티 전략 동시 운용을 위해 `scripts/live-trade.js` 구조 변경 논의.

@@ -109,12 +109,32 @@ function findStructureBreak(
   return null
 }
 
-function findFairValueGap(candles: Candle[], index: number, direction: "bullish" | "bearish") {
+// Two extra conditions beyond the bare 3-candle overlap check, both taken from LuxAlgo's
+// "ICT Killzones Toolkit" indicator's actual pFVG() logic — see the matching comment in
+// scripts/lib/ict-signals.js. The width-filter side (atrSeries/minWidthATR) is plumbed
+// through but unused here (always called with null/0) — this dashboard doesn't compute
+// ATR itself; scripts/lib/ict-signals.js's computeATR() is there for when a backtest
+// script wants to try it.
+function findFairValueGap(
+  candles: Candle[],
+  index: number,
+  direction: "bullish" | "bearish",
+  atrSeries: (number | null)[] | null,
+  minWidthATR = 0,
+) {
   if (index < 2) return null
   const first = candles[index - 2]
+  const middle = candles[index - 1]
   const third = candles[index]
-  if (direction === "bullish" && first.high < third.low) return { low: first.high, high: third.low, formedAt: index }
-  if (direction === "bearish" && first.low > third.high) return { low: third.high, high: first.low, formedAt: index }
+  const atr = atrSeries ? atrSeries[index] : null
+  const minWidth = minWidthATR > 0 && atr != null ? atr * minWidthATR : 0
+
+  if (direction === "bullish" && first.high < third.low && third.low - first.high > minWidth && middle.close > first.high) {
+    return { low: first.high, high: third.low, formedAt: index }
+  }
+  if (direction === "bearish" && first.low > third.high && first.low - third.high > minWidth && middle.close < first.low) {
+    return { low: third.high, high: first.low, formedAt: index }
+  }
   return null
 }
 
@@ -163,7 +183,7 @@ function detectIctSignals(candles: Candle[]): IctSignal[] {
         if (!mss) mss = findStructureBreak(swingHighs, swingLows, candles, sweepIndex, k, sweep.direction, SWING_STRENGTH)
         if (mss && !fvg) {
           for (let f = mss.index; f >= sweepIndex + 2; f -= 1) {
-            fvg = findFairValueGap(candles, f, sweep.direction)
+            fvg = findFairValueGap(candles, f, sweep.direction, null, 0)
             if (fvg) break
           }
         }

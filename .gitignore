@@ -42,3 +42,7 @@ next-dev.*.log
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# third-party reference source (LuxAlgo/CC BY-NC-SA, tradeforopp/MPL — kept locally for
+# reference while building the ICT strategy tab, not redistributed from this repo)
+/ictcode/

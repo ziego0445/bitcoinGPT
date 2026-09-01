@@ -122,18 +122,53 @@ function computeStructureBreaks(candles, swingHighs, swingLows, strength) {
   return breaks;
 }
 
+// Wilder's ATR — used only as the FVG minimum-width yardstick below, matching how
+// LuxAlgo's "ICT Killzones Toolkit" indicator sizes its own gap filter.
+function computeATR(candles, period = 14) {
+  const atr = new Array(candles.length).fill(null);
+  let avg = null;
+  let sum = 0;
+  for (let i = 0; i < candles.length; i += 1) {
+    const c = candles[i];
+    const trueRange =
+      i === 0 ? c.high - c.low : Math.max(c.high - c.low, Math.abs(c.high - candles[i - 1].close), Math.abs(c.low - candles[i - 1].close));
+    if (avg == null) {
+      sum += trueRange;
+      if (i === period - 1) avg = sum / period;
+    } else {
+      avg = (avg * (period - 1) + trueRange) / period;
+    }
+    atr[i] = avg;
+  }
+  return atr;
+}
+
 // Fair Value Gap: a 3-candle imbalance — candle[i-2] and candle[i] don't overlap, leaving
 // a gap price often returns to "fill" before continuing the move that created it.
 // "bullish" = gap sits below price (acts as support to retrace into for a LONG),
 // "bearish" = gap sits above price (resistance to retrace into for a SHORT).
-function findFairValueGap(candles, index, direction) {
+//
+// Two extra conditions beyond the bare 3-candle overlap check, both taken from LuxAlgo's
+// "ICT Killzones Toolkit" indicator's actual pFVG() logic (its default settings: a min
+// width of ATR(144)*1.2, and a displacement close):
+//   - minWidthATR: the gap itself must be at least this many ATR(14)s wide, so a 1-tick
+//     technical gap from ordinary noise doesn't count as a real imbalance. 0 disables it
+//     (the reference's own convention for "no filtering").
+//   - displacement: the middle (impulse) candle's CLOSE must extend past the first
+//     candle's level, confirming actual directional commitment rather than a gap that
+//     happens to exist geometrically without the market really pushing through it.
+function findFairValueGap(candles, index, direction, atrSeries, minWidthATR = 0) {
   if (index < 2) return null;
   const first = candles[index - 2];
+  const middle = candles[index - 1];
   const third = candles[index];
-  if (direction === "bullish" && first.high < third.low) {
+  const atr = atrSeries ? atrSeries[index] : null;
+  const minWidth = minWidthATR > 0 && atr != null ? atr * minWidthATR : 0;
+
+  if (direction === "bullish" && first.high < third.low && third.low - first.high > minWidth && middle.close > first.high) {
     return { low: first.high, high: third.low, formedAt: index };
   }
-  if (direction === "bearish" && first.low > third.high) {
+  if (direction === "bearish" && first.low > third.high && first.low - third.high > minWidth && middle.close < first.low) {
     return { low: third.high, high: first.low, formedAt: index };
   }
   return null;
@@ -145,10 +180,12 @@ const MSS_MAX_GAP = 15; // sweep -> structure break must land within this many c
 // Full sequence: liquidity sweep -> structure break in the reversal direction -> an FVG
 // formed during that impulse leg -> current candle retraces back into the FVG. Emits one
 // signal per candle index at most, at the moment price taps into a still-valid FVG.
-function detectICTSignals(candles, { swingStrength = 2 } = {}) {
+function detectICTSignals(candles, { swingStrength = 2, fvgMinWidthATR = 0 } = {}) {
   const { highs: swingHighs, lows: swingLows } = getSwingPoints(candles, swingStrength);
   const structureBreaks = computeStructureBreaks(candles, swingHighs, swingLows, swingStrength);
   const structureBreakType = new Map(structureBreaks.map((b) => [`${b.index}-${b.direction}`, b.type]));
+  // Only computed when the width filter is actually on — ATR isn't free at scale.
+  const atrSeries = fvgMinWidthATR > 0 ? computeATR(candles, 14) : null;
   const signals = [];
   // The same sweep+MSS+FVG setup can get "tapped" by several candles in a row as price
   // chops around inside the gap — only the first tap is a fresh entry, so track which
@@ -166,7 +203,7 @@ function detectICTSignals(candles, { swingStrength = 2 } = {}) {
         if (!mss) mss = findStructureBreak(swingHighs, swingLows, candles, sweepIndex, k, sweep.direction, swingStrength);
         if (mss && !fvg) {
           for (let f = mss.index; f >= sweepIndex + 2; f -= 1) {
-            fvg = findFairValueGap(candles, f, sweep.direction);
+            fvg = findFairValueGap(candles, f, sweep.direction, atrSeries, fvgMinWidthATR);
             if (fvg) break;
           }
         }
@@ -226,6 +263,7 @@ module.exports = {
   findLiquiditySweep,
   findStructureBreak,
   computeStructureBreaks,
+  computeATR,
   findFairValueGap,
   detectICTSignals,
 };
