@@ -2,18 +2,24 @@
   "mode": "live",
   "strategy": "ict-fvg",
   "startingBalance": 100.14371825213074,
-  "currentBalance": 100.14371825213074,
+  "currentBalance": 92.04479616213074,
   "startedAt": 1788241196732,
-  "openPosition": {
-    "pattern": "ict-fvg",
-    "mssType": "MSS",
-    "leverage": 10,
-    "size": 95.1290254822742,
-    "entryTime": 1788272123749,
-    "entryPrice": 78274.7,
-    "takeProfit": 79340.90000000001,
-    "stopLoss": 77685.5,
-    "orderId": "3884587323220480000"
-  },
-  "trades": []
+  "openPosition": null,
+  "trades": [
+    {
+      "pattern": "ict-fvg",
+      "mssType": "MSS",
+      "leverage": 10,
+      "entryTime": 1788272123749,
+      "entryPrice": 78274.7,
+      "exitTime": 1788275541894,
+      "exitPrice": 77684,
+      "exitReason": "stop-loss",
+      "pnlPct": -7.546499699136467,
+      "balanceBefore": 100.14371825213074,
+      "balanceAfter": 92.04479616213074,
+      "orderId": "3884587323220480000",
+      "exitOrderId": "3884702017134448640"
+    }
+  ]
 }
