@@ -7,13 +7,10 @@
 // port of either indicator's actual Pine source — an independent re-implementation of the
 // same public concepts, simplified down to what a bot can act on mechanically.
 //
-// STATUS: first structural pass. NOT backtested, NOT wired into scripts/live-trade.js —
-// that script still only trades the double-bottom pattern in scripts/lib/signals.js.
-// Before this trades real money it needs: a backtest (this repo's existing 150-day/15m
-// harness pattern is the template — see conversation history / git log for examples),
-// parameter tuning (swingStrength, SWEEP_LOOKBACK, MSS_MAX_GAP below are first guesses,
-// not fitted to anything), and a live-trade.js change to support SHORT + running two
-// concurrent strategies (it's currently single-position, LONG-only).
+// STATUS: backtested (150-day/15m BTC, LONG-only, R=2 — see docs/ict-strategy.md) and
+// live-trading for real on OKX via scripts/live-trade-ict.js. SHORT is detected/exposed
+// but not traded live (no robust backtested edge). swingStrength/SWEEP_LOOKBACK/
+// MSS_MAX_GAP below are still first-guess values, not parameter-swept.
 //
 // Mirrors app/components/IctStrategyChart.tsx — keep both in sync, same convention as
 // scripts/lib/signals.js / app/components/BitcoinEntryChart.tsx.
