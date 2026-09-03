@@ -14,6 +14,13 @@ const { toCandle } = require("./signals");
 const BASE_URL = "https://api.bitget.com";
 const PRODUCT_TYPE = "USDT-FUTURES";
 const MARGIN_COIN = "USDT";
+// Node's fetch has no default timeout — a hung TCP connection leaves `await fetch()`
+// pending forever, which keeps live-trade.js's `tickInFlight` guard true permanently and
+// silently freezes the whole bot (process still alive, zero further ticks). Confirmed to
+// actually happen this way to the OKX ICT bot (frozen ~48h after a network stall) — same
+// unbounded fetch pattern here, so the same fix applies. A stall now surfaces as a normal
+// rejected promise instead, caught by runTick's try/catch and retried next tick.
+const REQUEST_TIMEOUT_MS = 15_000;
 
 class BitgetApiError extends Error {
   constructor(code, bitgetMsg, path) {
@@ -81,11 +88,25 @@ async function request(config, method, path, { query, body } = {}) {
   // account — same base URL and endpoints, this header alone makes the difference.
   if (config.demo) headers.paptrading = "1";
 
-  const response = await fetch(`${BASE_URL}${path}${queryString}`, {
-    method,
-    headers,
-    body: bodyString || undefined,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}${path}${queryString}`, {
+      method,
+      headers,
+      body: bodyString || undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new BitgetApiError("timeout", `request timed out after ${REQUEST_TIMEOUT_MS}ms`, path);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const payload = await response.json().catch(() => null);
 

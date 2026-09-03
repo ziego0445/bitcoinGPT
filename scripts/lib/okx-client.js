@@ -20,6 +20,14 @@ const crypto = require("crypto");
 const BASE_URL = "https://www.okx.com";
 const INST_TYPE = "SWAP";
 const POS_SIDE = "long";
+// Node's fetch has no default timeout — a hung TCP connection (a network blip, OKX-side
+// stall, whatever) leaves the `await fetch()` below pending forever. That single stuck
+// call keeps runTick()'s `tickInFlight` guard true permanently, silently freezing the
+// whole bot (still alive as a process, zero further ticks) — this is exactly what
+// happened to the real ICT bot for ~48h after its first live trade closed. Every request
+// gets a hard ceiling so a stall surfaces as a normal rejected promise (caught by
+// runTick's try/catch, retried next tick) instead of hanging the process forever.
+const REQUEST_TIMEOUT_MS = 15_000;
 
 class OkxApiError extends Error {
   constructor(code, okxMsg, path) {
@@ -73,17 +81,31 @@ async function request(config, method, path, { query, body } = {}) {
   const timestamp = new Date().toISOString();
   const signature = sign(config.apiSecret, timestamp, method, requestPath, bodyString);
 
-  const response = await fetch(`${BASE_URL}${requestPath}`, {
-    method,
-    headers: {
-      "OK-ACCESS-KEY": config.apiKey,
-      "OK-ACCESS-SIGN": signature,
-      "OK-ACCESS-TIMESTAMP": timestamp,
-      "OK-ACCESS-PASSPHRASE": config.apiPassphrase,
-      "Content-Type": "application/json",
-    },
-    body: bodyString || undefined,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}${requestPath}`, {
+      method,
+      headers: {
+        "OK-ACCESS-KEY": config.apiKey,
+        "OK-ACCESS-SIGN": signature,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": config.apiPassphrase,
+        "Content-Type": "application/json",
+      },
+      body: bodyString || undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new OkxApiError("timeout", `request timed out after ${REQUEST_TIMEOUT_MS}ms`, path);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const payload = await response.json().catch(() => null);
   if (!response.ok || !payload || payload.code !== "0") {
