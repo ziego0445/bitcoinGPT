@@ -161,6 +161,10 @@ function adoptUntrackedPosition(state, position) {
   log("Exchange reports an open position local state didn't know about — adopting it (entry time is a best-effort 'now').");
   state.openPosition = {
     pattern: "recovered",
+    // Taken from the exchange, not assumed: this bot trades both ways now, and getting
+    // this wrong would flip the sign on the recorded P&L and make reconcilePosition hunt
+    // for the closing fill on the wrong side.
+    direction: position.posSide === "short" ? "SHORT" : "LONG",
     mssType: null,
     leverage: position.leverage || LEVERAGE,
     size: position.margin,
@@ -188,7 +192,20 @@ async function manageOpenPosition(config, contract, state, position) {
 
   if (position.avgPrice) opened.entryPrice = position.avgPrice;
 
-  const filledNow = Math.min(TRANCHES, Math.round(position.contracts / Number(opened.trancheSize)));
+  // Once any exit has fired, stop adding — see live-trade.js's copy of this guard for why
+  // (the backtest only fills tranches before anything is taken off).
+  const size = position.contracts;
+  opened.peakSize = Math.max(opened.peakSize ?? size, size);
+  if (size < opened.peakSize - Number(opened.trancheSize) * 0.1 && !opened.addsClosed) {
+    const cancelled = await okx.cancelEntryOrders(config).catch((error) => {
+      log("WARN: could not cancel remaining tranche orders:", error.message);
+      return 0;
+    });
+    opened.addsClosed = true;
+    log(`Partial exit detected (size ${size} < peak ${opened.peakSize}) — cancelled ${cancelled} unfilled tranche order(s).`);
+  }
+
+  const filledNow = Math.min(TRANCHES, Math.round(size / Number(opened.trancheSize)));
   if (filledNow <= (opened.tranchesFilled ?? 1)) return;
 
   const isLong = opened.direction !== "SHORT";

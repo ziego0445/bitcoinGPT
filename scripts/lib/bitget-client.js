@@ -284,6 +284,23 @@ async function getPendingOrders(config) {
   return data?.entrustedList ?? [];
 }
 
+// Cancels only the still-unfilled ENTRY tranches, leaving the reduce-only exits alone.
+// Once any take-profit has fired, the backtest this ladder is modelled on stops adding to
+// the position — but a resting limit buy would happily fill on the way back down and
+// re-grow it at a worse average against an unchanged stop. Cancelling them keeps live
+// behaviour matched to what was actually tested.
+async function cancelEntryOrders(config) {
+  const pending = await getPendingOrders(config);
+  const entries = pending.filter((o) => o.reduceOnly !== "YES" && o.reduceOnly !== true);
+  if (!entries.length) return 0;
+  for (const order of entries) {
+    await request(config, "POST", "/api/v2/mix/order/cancel-order", {
+      body: { symbol: config.symbol, productType: config.productType, orderId: order.orderId },
+    }).catch(() => {});
+  }
+  return entries.length;
+}
+
 // Clears every resting order on this symbol. Called when a position is flat so a
 // half-filled ladder can never linger and re-open a position on its own later.
 async function cancelAllOrders(config) {
@@ -310,6 +327,7 @@ module.exports = {
   placeOrder,
   getPendingOrders,
   cancelAllOrders,
+  cancelEntryOrders,
   getOrderDetail,
   getHistoryOrders,
   ensureAccountSetup,

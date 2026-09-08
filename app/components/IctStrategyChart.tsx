@@ -8,8 +8,10 @@ import KakaoAd from "./KakaoAd"
 // — see that file's header comment for the full rationale and current status. Same
 // "keep both copies in sync" convention as signals.js / BitcoinEntryChart.tsx.
 //
-// STATUS: backtested (150-day/15m BTC, LONG-only), live-traded for real on OKX via
-// scripts/live-trade-ict.js — see docs/ict-strategy.md. This component is read-only
+// STATUS: backtested (150-day/15m BTC) and live-traded for real on OKX via
+// scripts/live-trade-ict.js, which now ladders into each signal and trades whichever
+// direction recent signals have been leaning — see docs/ict-strategy.md and that script's
+// header for the numbers. This component is read-only
 // (detects/displays signals, never places orders itself); it polls the real bot's state
 // file (LIVE_TRADE_ICT_URL below) once that exists, and falls back to the earlier $100
 // paper-trading state otherwise.
@@ -493,7 +495,7 @@ export default function IctStrategyChart() {
 
       <section className="border-b border-[#1a2432] bg-[#0b0f17] px-5 py-5 lg:px-7">
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <StatPill label="유동성 스윕 → MSS/BOS → FVG (LONG only)" />
+          <StatPill label={isLive ? "유동성 스윕 → MSS/BOS → FVG (최근 우세방향 추종)" : "유동성 스윕 → MSS/BOS → FVG (LONG only)"} />
           <StatPill label="10x 레버리지" />
           <StatPill label="R=2 목표 (2R:1R)" />
           <StatPill
@@ -566,7 +568,7 @@ export default function IctStrategyChart() {
         ) : (
           <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">
             {isLive
-              ? "현재 보유중인 실전 포지션이 없습니다. LONG 신호가 뜨면 OKX 봇(scripts/live-trade-ict.js)이 자동으로 진입합니다."
+              ? "현재 보유중인 실전 포지션이 없습니다. 최근 신호가 우세한 방향(롱/숏)으로 신호가 뜨면 OKX 봇(scripts/live-trade-ict.js)이 3분할로 자동 진입합니다."
               : "현재 보유중인 모의 포지션이 없습니다. LONG 신호가 뜨면 GitHub Actions가 자동으로 진입시킵니다."}
           </div>
         )}
@@ -813,7 +815,7 @@ export default function IctStrategyChart() {
         <div className="mb-4 flex items-center justify-between">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Trade history</p>
-            <h2 className="mt-1 text-base font-semibold text-zinc-50">{isLive ? "실거래 결과 (OKX, LONG only)" : "모의투자 기록 ($100 시작, LONG only)"}</h2>
+            <h2 className="mt-1 text-base font-semibold text-zinc-50">{isLive ? "실거래 결과 (OKX, 롱/숏 양방향)" : "모의투자 기록 ($100 시작, LONG only)"}</h2>
           </div>
           {paperState && (
             <span className="text-xs text-zinc-500">
@@ -828,7 +830,7 @@ export default function IctStrategyChart() {
         ) : paperState.trades.length === 0 && !paperState.openPosition ? (
           <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-5 text-sm text-zinc-500">
             {isLive
-              ? "아직 체결된 실거래 기록이 없습니다. LONG 신호가 뜨면 OKX 봇(scripts/live-trade-ict.js)이 30초 내로 자동 진입합니다."
+              ? "아직 체결된 실거래 기록이 없습니다. 최근 우세방향과 같은 신호가 뜨면 OKX 봇(scripts/live-trade-ict.js)이 30초 내로 자동 진입합니다."
               : "아직 체결된 모의 트레이드가 없습니다. LONG 신호가 뜨면 GitHub Actions가 5분 내로 자동 진입시킵니다."}
           </div>
         ) : (

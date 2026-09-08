@@ -176,6 +176,17 @@ async function getPendingOrders(config) {
   return data ?? [];
 }
 
+// Cancels only the still-unfilled ENTRY tranches, leaving the reduce-only exits alone —
+// see the Bitget client's copy for why this matters.
+async function cancelEntryOrders(config) {
+  const pending = await getPendingOrders(config);
+  const entries = pending.filter((o) => o.reduceOnly !== "true" && o.reduceOnly !== true);
+  if (!entries.length) return 0;
+  const body = entries.map((o) => ({ instId: config.symbol, ordId: o.ordId }));
+  await request(config, "POST", "/api/v5/trade/cancel-batch-orders", { body });
+  return entries.length;
+}
+
 // OKX has no single "cancel everything" call, so this reads the open orders and cancels
 // them in one batch. Called whenever the position is flat, so a half-filled ladder can
 // never linger and open a position on its own later.
@@ -278,6 +289,7 @@ module.exports = {
   getPosition,
   getPendingOrders,
   cancelAllOrders,
+  cancelEntryOrders,
   getAccount,
   placeOrder,
   getOrderDetail,

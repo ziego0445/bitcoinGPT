@@ -366,7 +366,22 @@ async function manageOpenPosition(config, contract, state, position) {
   // Keep the average entry in sync with reality; every P&L number downstream uses it.
   if (position.openPriceAvg) opened.entryPrice = position.openPriceAvg;
 
-  const filledNow = Math.min(TRANCHES, Math.round(Number(position.total) / Number(opened.trancheSize)));
+  // Once any exit has fired, stop adding. The backtest this ladder is modelled on only
+  // fills tranches while nothing has been taken off yet; leaving the resting limit buys up
+  // would let the position re-grow at a worse average against an unchanged stop, which is
+  // strictly more risk than was tested. A shrink below the high-water size is the tell.
+  const size = Number(position.total);
+  opened.peakSize = Math.max(opened.peakSize ?? size, size);
+  if (size < opened.peakSize - Number(opened.trancheSize) * 0.1 && !opened.addsClosed) {
+    const cancelled = await bitget.cancelEntryOrders(config).catch((error) => {
+      log("WARN: could not cancel remaining tranche buys:", error.message);
+      return 0;
+    });
+    opened.addsClosed = true;
+    log(`Partial exit detected (size ${size} < peak ${opened.peakSize}) — cancelled ${cancelled} unfilled tranche buy(s).`);
+  }
+
+  const filledNow = Math.min(TRANCHES, Math.round(size / Number(opened.trancheSize)));
   if (filledNow <= (opened.tranchesFilled ?? 1)) return;
 
   const tp1 = opened.firstEntryPrice * (1 + TP1_PCT);
