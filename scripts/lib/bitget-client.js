@@ -192,7 +192,10 @@ async function getAccount(config) {
   };
 }
 
-async function placeOrder(config, { side, size, presetStopSurplusPrice, presetStopLossPrice, clientOid, reduceOnly }) {
+// `price` switches this to a limit order — the scale-in/scale-out flow needs resting
+// orders that fill at an exact level even while the bot is between 30s polls (and even if
+// it is offline entirely), which a market-on-detect order cannot do.
+async function placeOrder(config, { side, size, price, presetStopSurplusPrice, presetStopLossPrice, clientOid, reduceOnly }) {
   const body = {
     symbol: config.symbol,
     productType: config.productType,
@@ -200,7 +203,9 @@ async function placeOrder(config, { side, size, presetStopSurplusPrice, presetSt
     marginCoin: config.marginCoin,
     size,
     side, // "buy" | "sell"
-    orderType: "market",
+    orderType: price != null ? "limit" : "market",
+    price: price != null ? String(price) : undefined,
+    force: price != null ? "gtc" : undefined,
     presetStopSurplusPrice,
     presetStopLossPrice,
     clientOid,
@@ -269,6 +274,31 @@ async function ensureAccountSetup(config, { leverage }) {
   return results;
 }
 
+
+// Resting orders the scale-in/scale-out flow left on the book. Needed both to notice
+// tranche fills and to clean up leftovers once a position is fully closed.
+async function getPendingOrders(config) {
+  const data = await request(config, "GET", "/api/v2/mix/order/orders-pending", {
+    query: { symbol: config.symbol, productType: config.productType },
+  });
+  return data?.entrustedList ?? [];
+}
+
+// Clears every resting order on this symbol. Called when a position is flat so a
+// half-filled ladder can never linger and re-open a position on its own later.
+async function cancelAllOrders(config) {
+  try {
+    return await request(config, "POST", "/api/v2/mix/order/cancel-all-orders", {
+      body: { symbol: config.symbol, productType: config.productType, marginCoin: config.marginCoin },
+    });
+  } catch (error) {
+    // 22001 "No order to cancel" is the normal answer on an already-clean book, not a
+    // failure — callers use this to guarantee cleanliness, so an empty book is success.
+    if (error.code === "22001") return null;
+    throw error;
+  }
+}
+
 module.exports = {
   BitgetApiError,
   loadConfig,
@@ -278,6 +308,8 @@ module.exports = {
   getSinglePosition,
   getAccount,
   placeOrder,
+  getPendingOrders,
+  cancelAllOrders,
   getOrderDetail,
   getHistoryOrders,
   ensureAccountSetup,

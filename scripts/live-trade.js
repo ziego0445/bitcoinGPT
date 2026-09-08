@@ -1,15 +1,21 @@
 // Runs continuously on the user's own always-on PC (NOT GitHub Actions — see the note
-// below). Places real Bitget orders. Same signal/strategy logic as scripts/paper-trade.js
-// (10x leverage, single LONG-only position, score>=85, +8%/-8% account-equity TP/SL), but:
-//   - position size is a FIXED margin amount (BITGET_MARGIN_USDT) per trade, not
-//     paper-trade.js's full-balance compounding — real capital, not a simulation.
+// below). Places real Bitget orders off scripts/lib/signals.js's double-bottom pattern
+// (10x leverage, LONG only, score>=85), scaling into each signal and back out again:
+//   - ENTRY is a three-slice ladder: one market buy now, two limit buys resting 0.4% and
+//     0.8% lower. Averaging down is what makes this profitable after fees — see the
+//     TRANCHES block below for the numbers.
+//   - EXIT is split: half the filled size at +0.6%, the rest at +1.6%, both as resting
+//     reduce-only limit sells placed per tranche as that tranche fills.
+//   - the STOP is a single fixed level 2.0% under the FIRST entry, carried as
+//     presetStopLossPrice on every tranche buy, so Bitget's own engine closes the position
+//     at that price even if this process is offline. That is the one guarantee this script
+//     does not manage itself.
 //   - candles come from Bitget itself, not Binance, so the signal source matches the
 //     venue we actually trade on.
-//   - exits are detected, not decided, by this script: TP/SL are placed as exchange-native
-//     trigger prices on the entry order (presetStopSurplusPrice/presetStopLossPrice), so
-//     Bitget's engine guarantees the exit even if this process is offline when it happens.
-//     Each tick just polls the real position/order state and reconciles the local file —
-//     the exchange is always the source of truth, never the local JSON.
+//   - the exchange is always the source of truth: each tick reads the real position,
+//     notices tranche fills, and reconciles the local JSON to match. When the position is
+//     flat, every leftover resting order is cancelled — an unfilled tranche buy left on
+//     the book would otherwise re-open a position with no signal behind it.
 //
 // This script is intentionally NOT wired into .github/workflows/*.yml. It needs a real
 // API key with trade permission, and CI runner IPs are unpredictable (can't be
@@ -36,8 +42,24 @@ async function notify(text) {
 }
 
 const LEVERAGE = 10;
-const TAKE_PROFIT_PCT = 0.08; // +8% on account equity (= +0.8% price move at 10x)
-const STOP_LOSS_PCT = 0.08;
+// Scale in / scale out. Replaced the old single-entry +-8%-of-margin (+-0.80% price) setup
+// after that was shown to have no edge once real fees were counted: the round-trip fee
+// measured off the Bitget ledger is 0.080% of notional, which ate 10% of every 0.80%
+// target. Breakeven win rate was 56.9% and the strategy delivered exactly 55.0%.
+//
+// This ladder instead buys in three slices as price dips, then sells half at a near target
+// and half at a far one. On the same 150-day data, with the same real fee applied:
+//   single entry  : 120 trades, 55.0% win, 100 -> 70.6, max drawdown 74%
+//   this ladder    :  79 trades, 67.1% win, 100 -> 178.2, max drawdown 36%
+//   (in-sample 137.6 / out-of-sample 126.1 — profitable in both halves, and 119.6 on
+//    Bitget's own candles over the 31 days they publish)
+// Re-run scratchpad/scale_stress.js before changing any of these numbers.
+const TRANCHES = 3;
+const TRANCHE_STEP_PCT = 0.004; // each further slice rests 0.4% below the first entry
+const TP1_PCT = 0.006; // half the filled size exits here
+const TP2_PCT = 0.016; // the rest exits here
+const STOP_PCT = 0.020; // measured from the FIRST entry and never moved, so the level is
+                        // known up front and every tranche can carry the same stop
 // A bot-side breakeven-close (arm once unrealized P&L crossed +4% of margin, then close
 // immediately if price fell back to entry) was tried and rolled back — a 150-day/15m
 // backtest across every arm threshold from +2% to +7% showed it *always* underperforms not
@@ -165,9 +187,12 @@ function resumeWatermark(state) {
 // "no position" and could open a second one on top of it. Called every tick, not once.
 function adoptUntrackedPosition(state, position) {
   log("Exchange reports an open position local state didn't know about — adopting it (entry time is a best-effort 'now').");
-  // TP/SL are estimated from the entry price using this bot's own fixed parameters — we
-  // don't know Bitget's actual attached trigger prices in this recovery path, but this
-  // account only ever gets positions from this bot, so the estimate should match.
+  // TP/SL are estimated off the position's own average price using this bot's ladder
+  // percentages — we don't know which tranche(s) this position came from in this recovery
+  // path, so `trancheSize` is deliberately left unset: manageOpenPosition() skips
+  // positions it can't attribute to a ladder rather than guessing and placing exits for a
+  // size it doesn't understand. Whatever exits/stop the original ladder left on the book
+  // are still live on the exchange.
   state.openPosition = {
     pattern: "recovered",
     score: 0,
@@ -175,8 +200,9 @@ function adoptUntrackedPosition(state, position) {
     size: position.marginSize,
     entryTime: Date.now(),
     entryPrice: position.openPriceAvg,
-    takeProfit: position.openPriceAvg * (1 + TAKE_PROFIT_PCT / LEVERAGE),
-    stopLoss: position.openPriceAvg * (1 - STOP_LOSS_PCT / LEVERAGE),
+    takeProfit: position.openPriceAvg * (1 + TP1_PCT),
+    takeProfit2: position.openPriceAvg * (1 + TP2_PCT),
+    stopLoss: position.openPriceAvg * (1 - STOP_PCT),
     orderId: null,
   };
 }
@@ -193,14 +219,23 @@ function adoptUntrackedPosition(state, position) {
 // actually matches on this account. Left in as a harmless no-op in case Bitget ever
 // returns that value for a different order type; `reduceOnly === "YES"` and
 // `side === "sell"` are the fallbacks that actually do the work here.
-async function reconcilePosition(config, state, reports) {
+async function reconcilePosition(config, state, contract, reports) {
   const position = await bitget.getSinglePosition(config);
 
   if (position && !state.openPosition) {
     adoptUntrackedPosition(state, position);
     return;
   }
-  if (position) return; // still open and already tracked — nothing to reconcile
+  if (position) {
+    // Still open — the only thing to do is notice tranche fills and give each one its
+    // own exits.
+    if (contract) await manageOpenPosition(config, contract, state, position);
+    return;
+  }
+  // Flat on the exchange. Whatever is still resting on the book belongs to a ladder that
+  // is now over — an unfilled tranche buy left behind would quietly re-open a position
+  // with no signal behind it, so clear the book before anything else.
+  await bitget.cancelAllOrders(config).catch((error) => log("WARN: could not clear leftover orders:", error.message));
   if (!state.openPosition) return; // idle tick, no position on either side
 
   const opened = state.openPosition;
@@ -290,6 +325,68 @@ async function resolveMarginUsdt(config) {
   return Math.max(account.available * 0.95, 0);
 }
 
+// Places one tranche's own pair of exits: half of that tranche at the near target, half
+// at the far one. Doing it per tranche (rather than resizing one shared pair every time
+// the position grows) means the totals always land on "half the filled size at each
+// target" without ever cancelling and re-placing a live order.
+async function placeTrancheExits(config, contract, trancheSize, tp1, tp2, signalTime, trancheNumber) {
+  const half = bitget.roundSize(Number(trancheSize) / 2, contract);
+  // roundSize() rounds UP to the contract minimum, so on a very small tranche "half" can
+  // come back as the whole thing — two of those would exceed the position and the exchange
+  // rejects the second (seen for real on a minimum-size rehearsal). Fall back to one
+  // order at the near target, which is the leg most likely to fill anyway.
+  const exits =
+    Number(half) * 2 > Number(trancheSize)
+      ? [[tp1, "tp1", trancheSize]]
+      : [
+          [tp1, "tp1", half],
+          [tp2, "tp2", half],
+        ];
+  for (const [price, tag, size] of exits) {
+    await bitget
+      .placeOrder(config, {
+        side: "sell",
+        size,
+        price: price.toFixed(1),
+        reduceOnly: true,
+        clientOid: `live-${signalTime}-t${trancheNumber}-${tag}`,
+      })
+      .catch((error) => log(`WARN: tranche ${trancheNumber} ${tag} exit order failed:`, error.message));
+  }
+}
+
+// Watches a live ladder: when a resting tranche buy fills, the exchange position grows, so
+// that tranche's own exits get placed. The exchange's position size is the source of truth
+// — comparing it against tranchesFilled is what detects the fill, so a fill that happened
+// while this process was down is still picked up on the next tick.
+async function manageOpenPosition(config, contract, state, position) {
+  const opened = state.openPosition;
+  if (!opened || !opened.trancheSize) return; // pre-ladder position (e.g. "recovered") — nothing to manage
+
+  // Keep the average entry in sync with reality; every P&L number downstream uses it.
+  if (position.openPriceAvg) opened.entryPrice = position.openPriceAvg;
+
+  const filledNow = Math.min(TRANCHES, Math.round(Number(position.total) / Number(opened.trancheSize)));
+  if (filledNow <= (opened.tranchesFilled ?? 1)) return;
+
+  const tp1 = opened.firstEntryPrice * (1 + TP1_PCT);
+  const tp2 = opened.firstEntryPrice * (1 + TP2_PCT);
+  for (let t = (opened.tranchesFilled ?? 1) + 1; t <= filledNow; t += 1) {
+    log(`Tranche ${t}/${TRANCHES} filled (position now ${position.total}) — placing its exits.`);
+    await placeTrancheExits(config, contract, opened.trancheSize, tp1, tp2, opened.signalCandleTime, t);
+  }
+  opened.tranchesFilled = filledNow;
+
+  await notify(
+    [
+      `분할 추가매수 체결 (${filledNow}/${TRANCHES})`,
+      `평단: $${Number(position.openPriceAvg).toLocaleString()}`,
+      `보유수량: ${position.total}`,
+      `익절: $${tp1.toFixed(1)} · $${tp2.toFixed(1)}`,
+    ].join("\n"),
+  );
+}
+
 // Composes the "why did we enter" writeup for the trade-report journal, straight from
 // what detectSignals() already computed for this signal — no new reasoning invented here,
 // just the pattern's own title/detail/bullet reasons (signalReasons()) plus the reference
@@ -326,30 +423,40 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
   }
 
   const price = latestCandle.close;
-  const takeProfit = price * (1 + TAKE_PROFIT_PCT / LEVERAGE);
-  const stopLoss = price * (1 - STOP_LOSS_PCT / LEVERAGE);
-  const size = bitget.roundSize((marginUsdt * LEVERAGE) / price, contract);
+  // Every level is measured off the FIRST entry and never recalculated, so the whole
+  // ladder can be placed up front and left alone — the bot being briefly offline can't
+  // strand a position without a stop.
+  const stopLoss = price * (1 - STOP_PCT);
+  const takeProfit1 = price * (1 + TP1_PCT);
+  const takeProfit2 = price * (1 + TP2_PCT);
+  const trancheSize = bitget.roundSize((marginUsdt * LEVERAGE) / price / TRANCHES, contract);
 
   // roundSize() always rounds UP to the contract's minimum, even when the resolved
   // margin implies a much smaller size — on a small/depleted balance this would silently
   // ask for more margin than we actually have. Bitget would reject it anyway, but doing
   // that on every 30s tick until the candle rolls over just spams rejected live orders.
-  // Skip cleanly instead and wait for the next signal.
-  const impliedMargin = (Number(size) * price) / LEVERAGE;
+  // Skip cleanly instead and wait for the next signal. Checked against the FULL ladder,
+  // since all three tranches can fill.
+  const impliedMargin = (Number(trancheSize) * TRANCHES * price) / LEVERAGE;
   if (impliedMargin > marginUsdt * 1.05) {
     log(
-      `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin, ` +
+      `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin for the full ladder, ` +
         `only $${marginUsdt.toFixed(2)} available.`,
     );
     return;
   }
 
-  log(`Signal: ${latest.pattern} score=${latest.score} price=${price} margin=${marginUsdt.toFixed(2)} size=${size} — placing order...`);
+  log(
+    `Signal: ${latest.pattern} score=${latest.score} price=${price} margin=${marginUsdt.toFixed(2)} ` +
+      `tranche=${trancheSize} x${TRANCHES} — placing ladder...`,
+  );
 
+  // Tranche 1 goes in at market, carrying the stop. Bitget treats presetStopLossPrice as a
+  // position-level trigger in one-way mode, and every later tranche repeats the same price,
+  // so the stop covers whatever size ends up filled.
   const order = await bitget.placeOrder(config, {
     side: "buy",
-    size,
-    presetStopSurplusPrice: takeProfit.toFixed(1),
+    size: trancheSize,
     presetStopLossPrice: stopLoss.toFixed(1),
     clientOid: `live-${latestCandle.time}`,
   });
@@ -360,19 +467,48 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
   const entryPrice = (detail && Number(detail.priceAvg || detail.price)) || price;
   const entryTime = (detail && Number(detail.cTime)) || Date.now();
 
+  // Remaining tranches rest on the book as limit buys so they fill at the exact ladder
+  // price even between 30s polls, matching what the backtest assumed.
+  for (let t = 1; t < TRANCHES; t += 1) {
+    const level = price * (1 - TRANCHE_STEP_PCT * t);
+    await bitget
+      .placeOrder(config, {
+        side: "buy",
+        size: trancheSize,
+        price: level.toFixed(1),
+        presetStopLossPrice: stopLoss.toFixed(1),
+        clientOid: `live-${latestCandle.time}-t${t + 1}`,
+      })
+      .catch((error) => log(`WARN: tranche ${t + 1} limit order failed (ladder continues):`, error.message));
+  }
+
+  // Tranche 1's own exits. Each tranche gets its own pair (half near, half far) as it
+  // fills, so the totals always come out to half the filled size at each target without
+  // ever having to cancel and re-size anything.
+  await placeTrancheExits(config, contract, trancheSize, takeProfit1, takeProfit2, latestCandle.time, 1);
+
   state.openPosition = {
     pattern: latest.pattern,
     score: latest.score,
     leverage: LEVERAGE,
     size: marginUsdt,
     entryTime,
-    entryPrice,
-    takeProfit,
+    entryPrice, // average entry — refreshed from the exchange as tranches fill
+    firstEntryPrice: entryPrice,
+    trancheSize,
+    tranchesFilled: 1,
+    signalCandleTime: latestCandle.time,
+    takeProfit: takeProfit1, // kept under the old names so the dashboard keeps rendering
+    takeProfit2,
     stopLoss,
     orderId: order.orderId,
   };
 
-  log(`Entered LONG @ ${entryPrice} (orderId ${order.orderId}), TP ${takeProfit.toFixed(1)} / SL ${stopLoss.toFixed(1)}`);
+  log(
+    `Entered LONG tranche 1/${TRANCHES} @ ${entryPrice} (orderId ${order.orderId}) — ` +
+      `adds at ${(price * (1 - TRANCHE_STEP_PCT)).toFixed(1)} / ${(price * (1 - TRANCHE_STEP_PCT * 2)).toFixed(1)}, ` +
+      `TP ${takeProfit1.toFixed(1)} & ${takeProfit2.toFixed(1)}, SL ${stopLoss.toFixed(1)}`,
+  );
 
   const snapshotCandles = closedCandles.slice(-CHART_SNAPSHOT_CANDLES);
   const chartSvg = renderCandleSnapshot({
@@ -380,7 +516,10 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
     title: `BTCUSDT 15m · ${new Date(entryTime).toLocaleString("ko-KR")}`,
     markers: [{ index: snapshotCandles.length - 1, color: "#f472b6", label: "B" }],
     lines: [
-      { price: takeProfit, color: "#4ade80", label: `TP ${takeProfit.toFixed(1)}` },
+      { price: takeProfit2, color: "#4ade80", label: `TP2 ${takeProfit2.toFixed(1)}` },
+      { price: takeProfit1, color: "#86efac", label: `TP1 ${takeProfit1.toFixed(1)}` },
+      { price: price * (1 - TRANCHE_STEP_PCT), color: "#94a3b8", label: "추가2" },
+      { price: price * (1 - TRANCHE_STEP_PCT * 2), color: "#94a3b8", label: "추가3" },
       { price: stopLoss, color: "#f43f5e", label: `SL ${stopLoss.toFixed(1)}` },
       ...(latest.structureLevel != null ? [{ price: latest.structureLevel, color: "#22d3ee", label: "기준가" }] : []),
     ],
@@ -402,11 +541,13 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
 
   await notify(
     [
-      "실전 포지션 진입",
+      "실전 포지션 진입 (분할 1/3)",
       `패턴: ${signalTitle(latest.pattern)} (${latest.score.toFixed(0)}점)`,
       `진입가: $${entryPrice.toLocaleString()}`,
-      `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x`,
-      `TP: $${takeProfit.toFixed(1)} · SL: $${stopLoss.toFixed(1)}`,
+      `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x (3분할)`,
+      `추가매수: $${(price * (1 - TRANCHE_STEP_PCT)).toFixed(1)} / $${(price * (1 - TRANCHE_STEP_PCT * 2)).toFixed(1)}`,
+      `익절: $${takeProfit1.toFixed(1)}(절반) · $${takeProfit2.toFixed(1)}(절반)`,
+      `손절: $${stopLoss.toFixed(1)}`,
       `시간: ${new Date(entryTime).toLocaleString("ko-KR")}`,
     ].join("\n"),
   );
@@ -428,11 +569,13 @@ async function tick(config, state, reports) {
   const closedCandles = candles.slice(0, -1); // last candle is still forming
   const events = detectSignals(closedCandles);
 
-  await reconcilePosition(config, state, reports);
-
+  // Fetched before reconciling now — managing a live ladder needs the contract's size
+  // rounding to place each tranche's exits.
   if (!contractConfigCache) {
     contractConfigCache = await bitget.getContractConfig(config);
   }
+
+  await reconcilePosition(config, state, contractConfigCache, reports);
 
   if (!state.openPosition) {
     await maybeEnter(config, contractConfigCache, state, closedCandles, events, reports);
@@ -453,10 +596,10 @@ async function tick(config, state, reports) {
 // duplicate entry — the exchange's real position always overrides local assumptions.
 // Just the regular per-tick reconciliation (see reconcilePosition above), forced to
 // persist immediately rather than waiting for tick()'s own before/after diff.
-async function reconcileOnStartup(config, state, reports) {
+async function reconcileOnStartup(config, state, contract, reports) {
   const stateBefore = JSON.stringify(state);
   const reportsBefore = JSON.stringify(reports);
-  await reconcilePosition(config, state, reports);
+  await reconcilePosition(config, state, contract, reports);
   persistFiles([
     { path: "data/live-trades.json", changed: JSON.stringify(state) !== stateBefore, save: () => saveState(state), purgeUrl: STATE_PURGE_URL },
     {
@@ -481,7 +624,8 @@ async function main() {
 
   const state = loadState();
   const reports = loadReports(REPORTS_PATH);
-  await reconcileOnStartup(config, state, reports);
+  contractConfigCache = await bitget.getContractConfig(config);
+  await reconcileOnStartup(config, state, contractConfigCache, reports);
 
   let tickInFlight = false;
   async function runTick() {
