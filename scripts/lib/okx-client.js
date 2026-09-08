@@ -7,11 +7,10 @@
 //   OK-ACCESS-SIGN = base64(HMAC_SHA256(secret, timestamp + method + requestPath(+query) + body))
 //   timestamp is ISO-8601 (new Date().toISOString()), not epoch ms like Bitget's.
 //
-// This account is confirmed in hedge mode (posMode: "long_short_mode", checked against
-// GET /api/v5/account/config on setup) — every order/position/leverage call below passes
-// posSide: "long" explicitly. This script only ever trades LONG (see ict-signals.js
-// backtest notes on why), so "short" is simply never used, not because hedge mode
-// requires picking one.
+// This account is in hedge mode (posMode: "long_short_mode", checked against
+// GET /api/v5/account/config on setup), so every order/position call names its side
+// explicitly. The bot trades BOTH directions now — it follows whichever way recent ICT
+// signals have been leaning — so posSide is a parameter, defaulting to "long".
 //
 // No dependency needed: Node's global fetch + built-in crypto cover HMAC signing.
 
@@ -152,18 +151,39 @@ function roundSize(btcAmount, contract) {
   return bounded.toFixed(decimals);
 }
 
+// Returns whichever side currently holds size, not just "long" — the ICT bot follows the
+// dominant recent signal direction, so it can be short. `posSide` comes back on the result
+// so callers know which way the open position is facing.
 async function getPosition(config) {
   const data = await request(config, "GET", "/api/v5/account/positions", { query: { instId: config.symbol } });
-  const position = (data || []).find((p) => p.posSide === POS_SIDE && Number(p.pos) !== 0);
+  const position = (data || []).find((p) => Number(p.pos) !== 0);
   if (!position) return null;
 
   return {
-    contracts: Number(position.pos),
+    posSide: position.posSide, // "long" | "short"
+    contracts: Math.abs(Number(position.pos)),
     avgPrice: Number(position.avgPx),
     unrealizedPL: Number(position.upl),
     margin: Number(position.margin || position.imr || 0),
     leverage: Number(position.lever),
   };
+}
+
+// Resting orders on this instrument — the ladder needs these both to notice tranche fills
+// and to clear leftovers once a position is flat.
+async function getPendingOrders(config) {
+  const data = await request(config, "GET", "/api/v5/trade/orders-pending", { query: { instId: config.symbol } });
+  return data ?? [];
+}
+
+// OKX has no single "cancel everything" call, so this reads the open orders and cancels
+// them in one batch. Called whenever the position is flat, so a half-filled ladder can
+// never linger and open a position on its own later.
+async function cancelAllOrders(config) {
+  const pending = await getPendingOrders(config);
+  if (!pending.length) return null;
+  const body = pending.map((o) => ({ instId: config.symbol, ordId: o.ordId }));
+  return request(config, "POST", "/api/v5/trade/cancel-batch-orders", { body });
 }
 
 async function getAccount(config) {
@@ -180,7 +200,7 @@ async function getAccount(config) {
 // presetStopSurplusPrice/presetStopLossPrice — OKX's matching engine manages the exit
 // even if this process is offline when it triggers. ordPx "-1" means "execute at market
 // once the trigger price is touched" rather than a limit price.
-async function placeOrder(config, { side, size, tpTriggerPrice, slTriggerPrice, clientOrderId, reduceOnly }) {
+async function placeOrder(config, { side, size, price, posSide = POS_SIDE, tpTriggerPrice, slTriggerPrice, clientOrderId, reduceOnly }) {
   const attachAlgoOrds = [];
   if (tpTriggerPrice != null || slTriggerPrice != null) {
     attachAlgoOrds.push({
@@ -196,8 +216,13 @@ async function placeOrder(config, { side, size, tpTriggerPrice, slTriggerPrice, 
     instId: config.symbol,
     tdMode: "isolated",
     side, // "buy" | "sell"
-    posSide: POS_SIDE,
-    ordType: "market",
+    // Hedge mode needs the side spelled out. A LONG ladder buys to open and sells to
+    // close (posSide "long"); a SHORT ladder sells to open and buys to close ("short").
+    posSide,
+    // `price` makes it a resting limit order — the ladder needs fills at an exact level
+    // even between 30s polls, which a market-on-detect order cannot give.
+    ordType: price != null ? "limit" : "market",
+    px: price != null ? String(price) : undefined,
     sz: size,
     clOrdId: clientOrderId,
     reduceOnly: reduceOnly ? true : undefined,
@@ -231,9 +256,12 @@ async function getHistoryOrders(config, { startTime, endTime }) {
 async function ensureAccountSetup(config, { leverage }) {
   const results = { leverage: null };
   try {
-    await request(config, "POST", "/api/v5/account/set-leverage", {
-      body: { instId: config.symbol, lever: String(leverage), mgnMode: "isolated", posSide: POS_SIDE },
-    });
+    // Hedge mode keeps leverage per side, and this bot can open either one.
+    for (const posSide of ["long", "short"]) {
+      await request(config, "POST", "/api/v5/account/set-leverage", {
+        body: { instId: config.symbol, lever: String(leverage), mgnMode: "isolated", posSide },
+      });
+    }
     results.leverage = "ok";
   } catch (error) {
     results.leverage = error.message;
@@ -248,6 +276,8 @@ module.exports = {
   getContractConfig,
   roundSize,
   getPosition,
+  getPendingOrders,
+  cancelAllOrders,
   getAccount,
   placeOrder,
   getOrderDetail,

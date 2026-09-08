@@ -5,22 +5,26 @@
 // bots' positions into one if they ever traded the same symbol on the same account,
 // breaking independent $-amount allocation. OKX is a clean second account for this.
 //
-// Rules (from the 150-day/15m BTC backtest — see scripts/paper-trade-ict.js / docs/ict-strategy.md):
-//   - LONG only. SHORT did not show a robust edge in backtesting.
-//   - Stop-loss at the signal's own sweepPrice (the liquidity sweep's extreme).
-//   - Take-profit at a fixed 2R (R_MULTIPLE below).
-//   - Position size is a FIXED margin amount (OKX_MARGIN_USDT) per trade, same convention
-//     as live-trade.js — real capital, not compounding simulation.
+// Rules (see the TRANCHES block below for the backtest numbers behind each one):
+//   - DIRECTION follows whichever way recent ICT signals have been leaning, rather than a
+//     fixed LONG. A signal against the lean, or one during a period with no clear lean, is
+//     skipped.
+//   - ENTRY is a three-slice ladder priced off the signal's own risk (entry -> sweep
+//     extreme): one market order now, two limit orders resting 0.4R and 0.8R further away.
+//   - EXIT is split: half the filled size at +1R, the rest at +3R, as resting reduce-only
+//     limit orders placed per tranche as that tranche fills.
+//   - the STOP is a single level 1.6R from the FIRST entry, attached to every tranche as an
+//     exchange-side trigger (slTriggerPx) so OKX closes the position even if this process
+//     is offline. That is the one guarantee this script does not manage itself.
+//   - position size is a FIXED margin amount (OKX_MARGIN_USDT), same as live-trade.js.
 //
-// Exits are detected, not decided, by this script: TP/SL are attached to the entry order
-// itself (attachAlgoOrds -> tpTriggerPx/slTriggerPx), so OKX's engine guarantees the exit
-// even if this process is offline when it happens. Each tick just polls the real
-// position/order state and reconciles the local file — the exchange is always the source
-// of truth, never the local JSON. See scripts/lib/okx-client.js for the exact API calls.
+// The exchange is always the source of truth: each tick reads the real position, notices
+// tranche fills, and reconciles the local JSON. When flat, every leftover resting order is
+// cancelled — an unfilled tranche would otherwise re-open a position with no signal behind
+// it. See scripts/lib/okx-client.js for the exact API calls.
 //
-// This account is in hedge mode (posMode: "long_short_mode", confirmed on setup) — every
-// order/position call passes posSide: "long" (see okx-client.js). Since this bot never
-// trades SHORT, that's the only side it ever touches.
+// This account is in hedge mode (posMode: "long_short_mode"), so every order names its
+// posSide — "long" for a long ladder, "short" for a short one.
 //
 // Run it locally: run-live-trade-ict.bat (needs OKX_API_KEY / OKX_API_SECRET /
 // OKX_API_PASSPHRASE / OKX_SYMBOL in .env — see the OKX section already there).
@@ -43,9 +47,33 @@ async function notify(text) {
 }
 
 const LEVERAGE = 10;
-const R_MULTIPLE = 2;
+// Scale in / scale out, sized off each signal's own risk (entry -> sweep extreme), and
+// traded in whichever direction ICT signals have been leaning lately rather than a fixed
+// LONG. The old single-entry R=2 LONG-only setup had no edge once the real 0.080%
+// round-trip fee was counted — its stop sits only ~0.64% away, so fees ate ~12% of every
+// risk unit. Measured on 150 days of 15m BTC with that fee applied:
+//   single entry, LONG only (what ran before) : 94 trades, 39.4% win, 100 -> 57.6, MDD 66%
+//   ladder, LONG only                          : 81 trades, 53.1% win, 100 -> 160.5, MDD 21%
+//   ladder + dominant direction (this)         : 85 trades, 51.8% win, 100 -> 186.5, MDD 18%
+//     in-sample 151.5 / out-of-sample 131.6 — profitable in both halves
+// Direction rule sensitivity: lookback 10 fails (84.0), 20 and 40 both hold (189 / 170);
+// the majority threshold works anywhere from 0 to 4 and breaks at 6. Re-run
+// scratchpad/ict_direction_cmp.js before touching any of these.
+const TRANCHES = 3;
+const TRANCHE_STEP_R = 0.4; // each further slice rests 0.4R further against the entry
+const TP1_R = 1.0; // half the filled size exits here
+const TP2_R = 3.0; // the rest exits here
+const STOP_R = 1.6; // measured from the FIRST entry and never moved
+const DIRECTION_LOOKBACK = 20; // how many prior signals the direction vote reads
+const DIRECTION_MIN_EDGE = 1; // one side must lead by more than this to be tradeable
 const CANDLE_GRANULARITY = "15m";
-const CANDLE_LIMIT = 200;
+// The direction vote reads the previous DIRECTION_LOOKBACK signals, and ICT signals are
+// sparse (~1 per 100 candles), so a 200-candle window would only ever hold a handful and
+// the vote would almost never reach a verdict — a live-vs-backtest gap, since the backtest
+// always had 20 prior signals to count. 1500 candles yields ~44 signals and costs ~150ms
+// per tick to scan, which is nothing against a 30s poll.
+const CANDLE_LIMIT = 1500;
+const CANDLE_PAGE_SIZE = 300; // OKX caps /market/candles at 300 rows per request
 const POLL_INTERVAL_MS = 30_000;
 const CHART_SNAPSHOT_CANDLES = 60;
 const REPO_ROOT = path.join(__dirname, "..");
@@ -151,20 +179,64 @@ function adoptUntrackedPosition(state, position) {
 // against a real filled close on this account (no live order has been placed yet). Verify
 // on the first real close and adjust if needed, same caveat live-trade.js's Bitget version
 // carried until its own first live close confirmed the field names.
-async function reconcilePosition(config, state, reports) {
+// Watches a live ladder: when a resting tranche fills, the exchange position grows, so
+// that tranche's own exits get placed. The exchange's size is the source of truth, so a
+// fill that happened while this process was down is still picked up on the next tick.
+async function manageOpenPosition(config, contract, state, position) {
+  const opened = state.openPosition;
+  if (!opened || !opened.trancheSize) return; // pre-ladder position (e.g. "recovered")
+
+  if (position.avgPrice) opened.entryPrice = position.avgPrice;
+
+  const filledNow = Math.min(TRANCHES, Math.round(position.contracts / Number(opened.trancheSize)));
+  if (filledNow <= (opened.tranchesFilled ?? 1)) return;
+
+  const isLong = opened.direction !== "SHORT";
+  const sgn = isLong ? 1 : -1;
+  const tp1 = opened.firstEntryPrice + sgn * opened.riskPerUnit * TP1_R;
+  const tp2 = opened.firstEntryPrice + sgn * opened.riskPerUnit * TP2_R;
+  for (let t = (opened.tranchesFilled ?? 1) + 1; t <= filledNow; t += 1) {
+    log(`Tranche ${t}/${TRANCHES} filled (position now ${position.contracts}) — placing its exits.`);
+    await placeTrancheExits(config, contract, opened.trancheSize, isLong, tp1, tp2, opened.signalCandleTime, t);
+  }
+  opened.tranchesFilled = filledNow;
+
+  await notify(
+    [
+      `ICT 분할 추가진입 체결 (${filledNow}/${TRANCHES}, ${opened.direction})`,
+      `평단: $${Number(position.avgPrice).toLocaleString()}`,
+      `보유: ${position.contracts} 계약`,
+      `익절: $${tp1.toFixed(1)} · $${tp2.toFixed(1)}`,
+    ].join("\n"),
+  );
+}
+
+async function reconcilePosition(config, state, contract, reports) {
   const position = await okx.getPosition(config);
 
   if (position && !state.openPosition) {
     adoptUntrackedPosition(state, position);
     return;
   }
-  if (position) return; // still open and already tracked — nothing to reconcile
+  if (position) {
+    // Still open — the only thing to do is notice tranche fills and give each its exits.
+    if (contract) await manageOpenPosition(config, contract, state, position);
+    return;
+  }
+  // Flat on the exchange. Anything still resting belongs to a ladder that is now over —
+  // an unfilled tranche left behind would quietly re-open a position with no signal
+  // behind it, so clear the book first.
+  await okx.cancelAllOrders(config).catch((error) => log("WARN: could not clear leftover orders:", error.message));
   if (!state.openPosition) return; // idle tick, no position on either side
 
   const opened = state.openPosition;
+  // A short is opened by selling and CLOSED BY BUYING, so which side counts as the closing
+  // fill depends on the direction this position was in.
+  const wasLong = opened.direction !== "SHORT";
+  const closingSide = wasLong ? "sell" : "buy";
   const history = await okx.getHistoryOrders(config, { startTime: opened.entryTime - 60_000 }).catch(() => []);
   const closingOrder = history.find(
-    (order) => order.state === "filled" && order.side === "sell" && (order.reduceOnly === true || order.reduceOnly === "true"),
+    (order) => order.state === "filled" && order.side === closingSide && (order.reduceOnly === true || order.reduceOnly === "true"),
   );
 
   const account = await okx.getAccount(config);
@@ -177,7 +249,8 @@ async function reconcilePosition(config, state, reports) {
     const nearStopLoss = opened.stopLoss != null && Math.abs(exitPrice - opened.stopLoss) / opened.stopLoss < 0.001;
     if (nearTakeProfit && !nearStopLoss) exitReason = "take-profit";
     else if (nearStopLoss && !nearTakeProfit) exitReason = "stop-loss";
-    else exitReason = exitPrice >= opened.entryPrice ? "take-profit" : "stop-loss";
+    // Falling back on the direction of the move: up is a win for a long, down for a short.
+    else exitReason = (wasLong ? exitPrice >= opened.entryPrice : exitPrice <= opened.entryPrice) ? "take-profit" : "stop-loss";
   } else {
     const balanceWentUp = state.currentBalance != null ? account.equity > state.currentBalance : true;
     exitReason = balanceWentUp ? "take-profit" : "stop-loss";
@@ -186,11 +259,13 @@ async function reconcilePosition(config, state, reports) {
   }
   const exitTime = closingOrder ? Number(closingOrder.uTime ?? closingOrder.cTime) || Date.now() : Date.now();
 
-  const priceMovePct = (exitPrice - opened.entryPrice) / opened.entryPrice;
+  // A short profits when price falls, so the move is measured in the position's direction.
+  const priceMovePct = ((wasLong ? 1 : -1) * (exitPrice - opened.entryPrice)) / opened.entryPrice;
   const pnlPct = priceMovePct * opened.leverage * 100;
 
   state.trades.push({
     pattern: opened.pattern,
+    direction: opened.direction ?? "LONG", // pre-ladder records had no direction; they were all long
     mssType: opened.mssType,
     leverage: opened.leverage,
     entryTime: opened.entryTime,
@@ -248,24 +323,78 @@ function buildReasonText(signal, closedCandles) {
   ].join("\n");
 }
 
+// Which way to trade right now: whichever direction the recent ICT signals have been
+// leaning. Only signals BEFORE the one being judged are counted, so this can't peek ahead.
+// Returns null when neither side leads clearly enough — then the signal is skipped.
+function dominantDirection(signals, uptoIndex) {
+  const prior = signals.filter((s) => s.index < uptoIndex).slice(-DIRECTION_LOOKBACK);
+  const longs = prior.filter((s) => s.direction === "LONG").length;
+  const shorts = prior.length - longs;
+  if (longs > shorts + DIRECTION_MIN_EDGE) return "LONG";
+  if (shorts > longs + DIRECTION_MIN_EDGE) return "SHORT";
+  return null;
+}
+
+// One tranche's own exits: half of it at the near target, half at the far one. Placed per
+// tranche as it fills, so the totals always come out to half the filled size at each
+// target without ever resizing a live order.
+async function placeTrancheExits(config, contract, trancheSize, isLong, tp1, tp2, signalTime, trancheNumber) {
+  const half = okx.roundSize((Number(trancheSize) * contract.ctVal) / 2, contract);
+  // roundSize() rounds up to the contract minimum, so on a small tranche "half" can come
+  // back as the whole thing — two of those would exceed the position and the exchange
+  // rejects the second. Fall back to a single order at the near target.
+  const exits =
+    Number(half) * 2 > Number(trancheSize)
+      ? [[tp1, "a", trancheSize]]
+      : [
+          [tp1, "a", half],
+          [tp2, "b", half],
+        ];
+  for (const [price, tag, size] of exits) {
+    await okx
+      .placeOrder(config, {
+        side: isLong ? "sell" : "buy", // closing side is the opposite of the entry
+        posSide: isLong ? "long" : "short",
+        size,
+        price: price.toFixed(1),
+        reduceOnly: true,
+        clientOrderId: `ict${signalTime}x${trancheNumber}${tag}`,
+      })
+      .catch((error) => log(`WARN: tranche ${trancheNumber} exit ${tag} failed:`, error.message));
+  }
+}
+
 async function maybeEnter(config, contract, state, closedCandles, signals, reports) {
   if (state.openPosition) return;
 
   const latestCandle = closedCandles[closedCandles.length - 1];
   const latest = signals.find((s) => s.index === closedCandles.length - 1);
-  if (!latest || !latestCandle) return; // no LONG signal on the freshest closed candle
+  if (!latest || !latestCandle) return; // no signal on the freshest closed candle
 
   const watermark = resumeWatermark(state);
   if (watermark != null && latestCandle.time <= watermark) return; // already acted on this candle (or an earlier one)
 
-  const price = latestCandle.close;
-  const stopLoss = latest.sweepPrice;
-  const risk = price - stopLoss;
-  if (!(risk > 0)) {
-    log("WARN: signal's sweep price is not below entry — skipping (shouldn't happen for a real LONG signal).");
+  // Only trade with the recent grain. A signal against it (or during a period with no
+  // clear lean) is skipped — that filter is worth 160.5 -> 186.5 on the backtest.
+  const regime = dominantDirection(signals, latest.index);
+  if (regime == null || regime !== latest.direction) {
+    log(`Signal ${latest.direction} skipped — recent signal lean is ${regime ?? "unclear"}.`);
     return;
   }
-  const takeProfit = price + risk * R_MULTIPLE;
+
+  const isLong = latest.direction === "LONG";
+  const sgn = isLong ? 1 : -1;
+  const price = latestCandle.close;
+  // Every level is a multiple of the signal's own risk (entry -> sweep extreme), measured
+  // off the FIRST entry and never recalculated, so the whole ladder can be placed up front.
+  const risk = sgn * (price - latest.sweepPrice);
+  if (!(risk > 0)) {
+    log("WARN: sweep price is on the wrong side of entry — skipping (shouldn't happen for a real signal).");
+    return;
+  }
+  const stopLoss = price - sgn * risk * STOP_R;
+  const takeProfit1 = price + sgn * risk * TP1_R;
+  const takeProfit2 = price + sgn * risk * TP2_R;
 
   const marginUsdt = await resolveMarginUsdt(config);
   if (marginUsdt <= 0) {
@@ -273,28 +402,31 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
     return;
   }
 
-  const btcAmount = (marginUsdt * LEVERAGE) / price;
-  const size = okx.roundSize(btcAmount, contract);
-  const impliedMargin = (Number(size) * contract.ctVal * price) / LEVERAGE;
+  const trancheSize = okx.roundSize((marginUsdt * LEVERAGE) / price / TRANCHES, contract);
+  // Checked against the FULL ladder, since all three tranches can fill.
+  const impliedMargin = (Number(trancheSize) * TRANCHES * contract.ctVal * price) / LEVERAGE;
   if (impliedMargin > marginUsdt * 1.05) {
     log(
-      `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin, ` +
+      `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin for the full ladder, ` +
         `only $${marginUsdt.toFixed(2)} available.`,
     );
     return;
   }
 
   log(
-    `Signal: ICT ${latest.mssType} LONG price=${price} stop=${stopLoss} target=${takeProfit.toFixed(1)} ` +
-      `margin=${marginUsdt.toFixed(2)} size=${size} — placing order...`,
+    `Signal: ICT ${latest.mssType} ${latest.direction} (lean ${regime}) price=${price} risk=${risk.toFixed(1)} ` +
+      `stop=${stopLoss.toFixed(1)} targets=${takeProfit1.toFixed(1)}/${takeProfit2.toFixed(1)} ` +
+      `margin=${marginUsdt.toFixed(2)} tranche=${trancheSize} x${TRANCHES} — placing ladder...`,
   );
 
-  // clOrdId must be plain alphanumeric per OKX's rules (no hyphens, unlike Bitget's
-  // clientOid) — see okx-client.js's placeOrder for how attachAlgoClOrdId derives from it.
+  // Tranche 1 at market, carrying the stop as an exchange-side trigger so OKX closes the
+  // position at that level even while this process is offline. clOrdId must be plain
+  // alphanumeric per OKX's rules (no hyphens, unlike Bitget's clientOid).
+  const posSide = isLong ? "long" : "short";
   const order = await okx.placeOrder(config, {
-    side: "buy",
-    size,
-    tpTriggerPrice: takeProfit.toFixed(1),
+    side: isLong ? "buy" : "sell",
+    posSide,
+    size: trancheSize,
     slTriggerPrice: stopLoss.toFixed(1),
     clientOrderId: `ict${latestCandle.time}`,
   });
@@ -304,19 +436,49 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
   const entryPrice = (detail && Number(detail.avgPx || detail.px)) || price;
   const entryTime = (detail && Number(detail.cTime)) || Date.now();
 
+  // Remaining tranches rest on the book so they fill at the exact ladder price even
+  // between 30s polls, matching what the backtest assumed.
+  for (let t = 1; t < TRANCHES; t += 1) {
+    const level = price - sgn * risk * TRANCHE_STEP_R * t;
+    await okx
+      .placeOrder(config, {
+        side: isLong ? "buy" : "sell",
+        posSide,
+        size: trancheSize,
+        price: level.toFixed(1),
+        slTriggerPrice: stopLoss.toFixed(1),
+        clientOrderId: `ict${latestCandle.time}t${t + 1}`,
+      })
+      .catch((error) => log(`WARN: tranche ${t + 1} limit order failed (ladder continues):`, error.message));
+  }
+
+  await placeTrancheExits(config, contract, trancheSize, isLong, takeProfit1, takeProfit2, latestCandle.time, 1);
+
+  const takeProfit = takeProfit1; // kept under the old name so the dashboard keeps rendering
   state.openPosition = {
     pattern: "ict-fvg",
+    direction: latest.direction,
     mssType: latest.mssType,
     leverage: LEVERAGE,
     size: marginUsdt,
     entryTime,
-    entryPrice,
+    entryPrice, // average entry — refreshed from the exchange as tranches fill
+    firstEntryPrice: entryPrice,
+    riskPerUnit: risk,
+    trancheSize,
+    tranchesFilled: 1,
+    signalCandleTime: latestCandle.time,
     takeProfit,
+    takeProfit2,
     stopLoss,
     orderId: order.ordId,
   };
 
-  log(`Entered LONG @ ${entryPrice} (orderId ${order.ordId}), TP ${takeProfit.toFixed(1)} / SL ${stopLoss.toFixed(1)}`);
+  log(
+    `Entered ${latest.direction} tranche 1/${TRANCHES} @ ${entryPrice} (orderId ${order.ordId}) — ` +
+      `adds at ${(price - sgn * risk * TRANCHE_STEP_R).toFixed(1)} / ${(price - sgn * risk * TRANCHE_STEP_R * 2).toFixed(1)}, ` +
+      `TP ${takeProfit1.toFixed(1)} & ${takeProfit2.toFixed(1)}, SL ${stopLoss.toFixed(1)}`,
+  );
 
   // Map the signal's sweep/MSS candle indices (against the full closedCandles series)
   // onto the trimmed snapshot window so their markers land on the right candle.
@@ -334,7 +496,10 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
     title: `BTC-USDT-SWAP 15m · ${new Date(entryTime).toLocaleString("ko-KR")}`,
     markers,
     lines: [
-      { price: takeProfit, color: "#4ade80", label: `TP ${takeProfit.toFixed(1)}` },
+      { price: takeProfit2, color: "#4ade80", label: `TP2 ${takeProfit2.toFixed(1)}` },
+      { price: takeProfit1, color: "#86efac", label: `TP1 ${takeProfit1.toFixed(1)}` },
+      { price: price - sgn * risk * TRANCHE_STEP_R, color: "#94a3b8", label: "추가2" },
+      { price: price - sgn * risk * TRANCHE_STEP_R * 2, color: "#94a3b8", label: "추가3" },
       { price: stopLoss, color: "#f43f5e", label: `SL ${stopLoss.toFixed(1)}` },
       { price: latest.fvgLow, color: "#a78bfa", label: "FVG low" },
       { price: latest.fvgHigh, color: "#a78bfa", label: "FVG high" },
@@ -357,14 +522,34 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
 
   await notify(
     [
-      "ICT 실전 포지션 진입 (OKX)",
-      `구조: ${latest.mssType} 유동성 스윕 → FVG 진입`,
+      `ICT 실전 포지션 진입 ${latest.direction} (분할 1/${TRANCHES}, OKX)`,
+      `구조: ${latest.mssType} 유동성 스윕 → FVG 진입 · 최근 신호 우세 ${regime}`,
       `진입가: $${entryPrice.toLocaleString()}`,
-      `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x`,
-      `TP: $${takeProfit.toFixed(1)} · SL: $${stopLoss.toFixed(1)} (R=${R_MULTIPLE})`,
+      `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x (3분할)`,
+      `추가진입: $${(price - sgn * risk * TRANCHE_STEP_R).toFixed(1)} / $${(price - sgn * risk * TRANCHE_STEP_R * 2).toFixed(1)}`,
+      `익절: $${takeProfit1.toFixed(1)}(절반) · $${takeProfit2.toFixed(1)}(절반)`,
+      `손절: $${stopLoss.toFixed(1)}`,
       `시간: ${new Date(entryTime).toLocaleString("ko-KR")}`,
     ].join("\n"),
   );
+}
+
+// OKX returns at most CANDLE_PAGE_SIZE rows per call, so walk backwards until we have
+// enough history for the direction vote.
+async function fetchCandles(config) {
+  let all = [];
+  let after;
+  while (all.length < CANDLE_LIMIT) {
+    const batch = await okx.getCandles(config, { bar: CANDLE_GRANULARITY, limit: CANDLE_PAGE_SIZE, after });
+    if (!batch.length) break;
+    all = batch.concat(all);
+    after = batch[0].time;
+    if (batch.length < CANDLE_PAGE_SIZE) break;
+  }
+  // de-dup by timestamp (pages can overlap by a row) and keep ascending order
+  const byTime = new Map();
+  for (const c of all) byTime.set(c.time, c);
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
 let contractConfigCache = null;
@@ -379,15 +564,19 @@ async function tick(config, state, reports) {
     state.currentBalance = account.equity;
   }
 
-  const candles = await okx.getCandles(config, { bar: CANDLE_GRANULARITY, limit: CANDLE_LIMIT });
+  const candles = await fetchCandles(config);
   const closedCandles = candles.slice(0, -1); // last candle is still forming
-  const signals = detectICTSignals(closedCandles).filter((s) => s.direction === "LONG");
+  // Both directions are kept — maybeEnter() decides which way to trade from the recent
+  // signal lean, and the vote itself needs to see both sides to count them.
+  const signals = detectICTSignals(closedCandles);
 
-  await reconcilePosition(config, state, reports);
-
+  // Fetched before reconciling now — managing a live ladder needs the contract's size
+  // rounding to place each tranche's exits.
   if (!contractConfigCache) {
     contractConfigCache = await okx.getContractConfig(config);
   }
+
+  await reconcilePosition(config, state, contractConfigCache, reports);
 
   if (!state.openPosition) {
     await maybeEnter(config, contractConfigCache, state, closedCandles, signals, reports);
@@ -404,10 +593,10 @@ async function tick(config, state, reports) {
   ]);
 }
 
-async function reconcileOnStartup(config, state, reports) {
+async function reconcileOnStartup(config, state, contract, reports) {
   const stateBefore = JSON.stringify(state);
   const reportsBefore = JSON.stringify(reports);
-  await reconcilePosition(config, state, reports);
+  await reconcilePosition(config, state, contract, reports);
   persistFiles([
     { path: "data/live-trades-ict.json", changed: JSON.stringify(state) !== stateBefore, save: () => saveState(state), purgeUrl: STATE_PURGE_URL },
     {
@@ -429,7 +618,8 @@ async function main() {
 
   const state = loadState();
   const reports = loadReports(REPORTS_PATH);
-  await reconcileOnStartup(config, state, reports);
+  contractConfigCache = await okx.getContractConfig(config);
+  await reconcileOnStartup(config, state, contractConfigCache, reports);
 
   let tickInFlight = false;
   async function runTick() {
