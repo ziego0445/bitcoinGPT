@@ -242,16 +242,53 @@ async function reconcilePosition(config, state, contract, reports) {
   // A small negative buffer covers clock skew between this process and Bitget's server —
   // the entry order itself should always be inside [entryTime - buffer, now].
   const history = await bitget.getHistoryOrders(config, { startTime: opened.entryTime - 60_000 }).catch(() => []);
-  const closingOrder = history.find(
-    (order) => order.tradeSide === "close" || order.reduceOnly === "YES" || order.side === "sell",
-  );
+  // The ladder can close in TWO reduce-only fills (TP1 half, TP2 half), and anything else
+  // that happens to sell on this account afterward — a manual close, a diagnostic script,
+  // whatever — also matches this same filter and lands in the same history window. Taking
+  // just history.find()'s first match is wrong on both counts: it can grab one leg of a
+  // real two-part exit instead of blending them, and it has no way to tell a genuine
+  // closing fill apart from unrelated later activity. Sorting oldest-first and stopping
+  // once the closed size reaches what was actually entered fixes both — confirmed against
+  // a real mix-up where a manual close followed shortly by an unrelated sell on the same
+  // account got recorded as the trade's exit instead of the real one.
+  const closingCandidates = history
+    // Keyed on actual filled volume rather than status: a limit exit that partly filled
+    // and was then cancelled still closed part of the position and still belongs in the
+    // average, but its status reads "cancelled", not "filled".
+    .filter(
+      (order) =>
+        Number(order.baseVolume ?? order.size ?? 0) > 0 &&
+        (order.tradeSide === "close" || order.reduceOnly === "YES" || order.side === "sell"),
+    )
+    .sort((a, b) => Number(a.uTime ?? a.cTime) - Number(b.uTime ?? b.cTime));
+
+  const expectedSize = opened.trancheSize != null ? Number(opened.trancheSize) * (opened.tranchesFilled ?? 1) : null;
+  const closingOrders = [];
+  let closedSize = 0;
+  for (const order of closingCandidates) {
+    if (expectedSize != null && closedSize >= expectedSize - 1e-9) break; // rest belongs to something else
+    closingOrders.push(order);
+    closedSize += Number(order.baseVolume ?? order.size ?? 0);
+  }
+  // Legacy (pre-ladder) positions never set trancheSize, so expectedSize is unknown —
+  // fall back to the single-order behavior this replaced rather than guessing a size.
+  if (expectedSize == null && closingOrders.length > 1) closingOrders.length = 1;
+  const closingOrder = closingOrders.at(-1); // for exitOrderId/exitTime below
 
   const account = await bitget.getAccount(config);
   let exitPrice;
   let exitReason;
 
-  if (closingOrder) {
-    exitPrice = Number(closingOrder.priceAvg ?? closingOrder.price);
+  if (closingOrders.length) {
+    // Size-weighted average across every leg that closed this position.
+    let weightedSum = 0;
+    let totalSize = 0;
+    for (const order of closingOrders) {
+      const size = Number(order.baseVolume ?? order.size ?? 0);
+      weightedSum += size * Number(order.priceAvg ?? order.price ?? 0);
+      totalSize += size;
+    }
+    exitPrice = totalSize > 0 ? weightedSum / totalSize : Number(closingOrder.priceAvg ?? closingOrder.price);
     // A real TP/SL trigger fill lands within a hair of the exact preset price. Only
     // trust "closer to TP than SL" as a real take-profit when it's actually close to TP
     // in absolute terms — otherwise (e.g. a manual close somewhere near entry) that
@@ -259,7 +296,7 @@ async function reconcilePosition(config, state, contract, reports) {
     // happened to be numerically nearer the target than the stop. Fall back to the
     // sign of the actual price move, which can never contradict the P&L shown next to it.
     const nearTakeProfit = Math.abs(exitPrice - opened.takeProfit) / opened.takeProfit < 0.001;
-    const nearStopLoss = Math.abs(exitPrice - opened.stopLoss) / opened.stopLoss < 0.001;
+    const nearStopLoss = opened.stopLoss != null && Math.abs(exitPrice - opened.stopLoss) / opened.stopLoss < 0.001;
     if (nearTakeProfit && !nearStopLoss) exitReason = "take-profit";
     else if (nearStopLoss && !nearTakeProfit) exitReason = "stop-loss";
     else exitReason = exitPrice >= opened.entryPrice ? "take-profit" : "stop-loss";
@@ -300,7 +337,7 @@ async function reconcilePosition(config, state, contract, reports) {
 
   // No matching open report for a "recovered" position (see adoptUntrackedPosition — it
   // never had a report opened for it in the first place) — closeReport() no-ops safely.
-  closeReport(reports, opened.entryTime, { exitTime, exitPrice, exitReason, pnlPct });
+  closeReport(reports, opened.entryTime, { exitTime, exitPrice, exitReason, pnlPct, entryPrice: opened.entryPrice });
 
   await notify(
     [

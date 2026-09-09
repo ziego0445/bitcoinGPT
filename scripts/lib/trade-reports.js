@@ -67,6 +67,16 @@ function closeReport(reports, entryTime, exit) {
   if (!report) return false;
 
   report.status = "closed";
+  // A laddered entry's price keeps moving as tranches fill, and the P&L is measured off
+  // that average — but the report was opened with only the FIRST tranche's price. Without
+  // this the journal shows an entry and a P&L that don't tie out (seen for real: entry
+  // 78,575.1 with -2.33%, when those two numbers imply -2.96%). The caller passes the
+  // position's final average so the record is self-consistent; the first fill is kept
+  // alongside it since that's the price the setup was actually judged at.
+  if (exit.entryPrice != null && exit.entryPrice !== report.entryPrice) {
+    report.firstEntryPrice = report.entryPrice;
+    report.entryPrice = exit.entryPrice;
+  }
   report.exitTime = exit.exitTime;
   report.exitPrice = exit.exitPrice;
   report.exitReason = exit.exitReason;

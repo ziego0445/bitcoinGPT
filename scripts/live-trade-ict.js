@@ -252,9 +252,34 @@ async function reconcilePosition(config, state, contract, reports) {
   const wasLong = opened.direction !== "SHORT";
   const closingSide = wasLong ? "sell" : "buy";
   const history = await okx.getHistoryOrders(config, { startTime: opened.entryTime - 60_000 }).catch(() => []);
-  const closingOrder = history.find(
-    (order) => order.state === "filled" && order.side === closingSide && (order.reduceOnly === true || order.reduceOnly === "true"),
-  );
+  // The ladder closes in TWO reduce-only fills (half at TP1, half at TP2), and any other
+  // activity on this account afterward matches the same filter. Taking one arbitrary match
+  // both misses half of a real two-part exit and can pick up something unrelated — so walk
+  // oldest-first and stop once the closed size covers what was actually entered. See
+  // live-trade.js's copy for the real mix-up that motivated this.
+  const closingCandidates = history
+    // Filled volume, not status: a partly-filled-then-cancelled exit still closed part of
+    // the position and still belongs in the average.
+    .filter(
+      (order) =>
+        Number(order.accFillSz ?? 0) > 0 &&
+        order.side === closingSide &&
+        (order.reduceOnly === true || order.reduceOnly === "true"),
+    )
+    .sort((a, b) => Number(a.uTime ?? a.cTime) - Number(b.uTime ?? b.cTime));
+
+  const expectedSize = opened.trancheSize != null ? Number(opened.trancheSize) * (opened.tranchesFilled ?? 1) : null;
+  const closingOrders = [];
+  let closedSize = 0;
+  for (const order of closingCandidates) {
+    if (expectedSize != null && closedSize >= expectedSize - 1e-9) break; // rest belongs to something else
+    closingOrders.push(order);
+    closedSize += Number(order.accFillSz ?? order.sz ?? 0);
+  }
+  // A "recovered" position never recorded a tranche size, so there is nothing to measure
+  // against — fall back to the single-order behavior this replaced.
+  if (expectedSize == null && closingOrders.length > 1) closingOrders.length = 1;
+  const closingOrder = closingOrders.at(-1); // last leg: gives exitTime / exitOrderId
 
   const account = await okx.getAccount(config);
   let exitPrice;
@@ -302,7 +327,7 @@ async function reconcilePosition(config, state, contract, reports) {
   log(`Position closed: ${exitReason} @ ${exitPrice} (pnl ${pnlPct.toFixed(2)}%)`);
 
   // No matching open report for a "recovered" position — closeReport() no-ops safely.
-  closeReport(reports, opened.entryTime, { exitTime, exitPrice, exitReason, pnlPct });
+  closeReport(reports, opened.entryTime, { exitTime, exitPrice, exitReason, pnlPct, entryPrice: opened.entryPrice });
 
   await notify(
     [
@@ -527,6 +552,7 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
     id: `ict-${entryTime}`,
     bot: "ict",
     pattern: "ict-fvg",
+    direction: latest.direction, // this bot trades both ways now — the journal has to say which
     mssType: latest.mssType,
     reasonSummary: `유동성 스윕 → ${latest.mssType} → FVG 진입`,
     reasonDetail: buildReasonText(latest, closedCandles),

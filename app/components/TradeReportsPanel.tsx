@@ -15,6 +15,9 @@ interface TradeReport {
   bot: "bitget" | "ict"
   status: "open" | "closed"
   pattern: string
+  // The ICT bot trades both ways now, so the journal has to say which — older records
+  // predate the field and were all long.
+  direction?: "LONG" | "SHORT" | null
   mssType?: "MSS" | "BOS" | null
   score?: number
   reasonSummary: string
@@ -87,6 +90,15 @@ function ReportCard({ report }: { report: TradeReport }) {
         <div className="flex items-center gap-2">
           <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${BOT_BADGE_CLASS[report.bot]}`}>{BOT_LABEL[report.bot]}</span>
           <span className="text-sm font-semibold text-zinc-100">{report.reasonSummary}</span>
+          {report.direction && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                report.direction === "SHORT" ? "bg-rose-300/15 text-rose-300" : "bg-cyan-300/15 text-cyan-300"
+              }`}
+            >
+              {report.direction}
+            </span>
+          )}
           {report.mssType && <span className="text-xs text-zinc-500">({report.mssType})</span>}
         </div>
         {isOpen ? (
