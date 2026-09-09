@@ -20,7 +20,8 @@
     "takeProfit": 78400.6,
     "takeProfit2": 78090.20000000001,
     "stopLoss": 78804.12,
-    "orderId": "3906451611732070400"
+    "orderId": "3906451611732070400",
+    "peakSize": 0.32
   },
   "trades": [
     {
