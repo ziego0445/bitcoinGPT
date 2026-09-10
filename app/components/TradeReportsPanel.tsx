@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import KakaoAd from "./KakaoAd"
+import PartialExitsNote, { type PartialExit } from "./PartialExitsNote"
 
 // Trade-report journal: every real entry (both bots) writes one of these the moment it
 // fires — why it entered (reasonDetail, straight from the signal that triggered it) plus
@@ -33,6 +34,10 @@ interface TradeReport {
   pnlPct: number | null
   holdingMinutes: number | null
   outcomeSummary: string | null
+  // Exit legs filled while the position was still open (scripts/lib/trade-reports.js
+  // updateReportPartials) — kept after close too, so the card shows how it scaled out.
+  partialExits?: PartialExit[]
+  realizedPnlUsdt?: number
 }
 
 const BITGET_REPORTS_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/trade-reports-bitget.json"
@@ -163,6 +168,14 @@ function ReportCard({ report }: { report: TradeReport }) {
               </>
             )}
           </div>
+
+          {isOpen && (
+            <PartialExitsNote
+              exits={report.partialExits}
+              realizedPnlUsdt={report.realizedPnlUsdt}
+              unit={report.bot === "ict" ? "계약" : "BTC"}
+            />
+          )}
 
           {!isOpen && report.outcomeSummary && (
             <div className="rounded-lg border border-[#263545] bg-[#080d13] p-3">

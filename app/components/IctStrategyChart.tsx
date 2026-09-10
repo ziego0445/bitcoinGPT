@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import KakaoAd from "./KakaoAd"
+import PartialExitsNote, { type PartialExit } from "./PartialExitsNote"
 
 // ICT (Inner Circle Trader) concept-based signal detection: Liquidity Sweep -> Market
 // Structure Shift (MSS) -> Fair Value Gap (FVG) entry. Mirrors scripts/lib/ict-signals.js
@@ -28,6 +29,13 @@ interface PaperOpenPosition {
   entryPrice: number
   stopLoss: number
   takeProfit: number
+  // Live ladder only (scripts/live-trade-ict.js). Older/paper records have no direction
+  // and were all long.
+  direction?: Direction
+  takeProfit2?: number
+  lastSize?: number
+  partialExits?: PartialExit[]
+  realizedPnlUsdt?: number
 }
 
 interface PaperTrade {
@@ -434,9 +442,14 @@ export default function IctStrategyChart() {
   const paperReturnPct = paperState ? ((paperState.currentBalance - paperState.startingBalance) / paperState.startingBalance) * 100 : null
   const paperEntryIndex = paperState?.openPosition ? indexAtTime(paperState.openPosition.entryTime) : -1
   const currentPrice = candles.at(-1)?.close
+  // A short gains when price falls, so the move is signed by the position's direction.
   const openUnrealizedPct =
     paperState?.openPosition && currentPrice
-      ? ((currentPrice - paperState.openPosition.entryPrice) / paperState.openPosition.entryPrice) * paperState.openPosition.leverage * 100
+      ? ((paperState.openPosition.direction === "SHORT" ? -1 : 1) *
+          (currentPrice - paperState.openPosition.entryPrice) /
+          paperState.openPosition.entryPrice) *
+        paperState.openPosition.leverage *
+        100
       : null
   const closedTrades = paperState?.trades ?? []
   const winCount = closedTrades.filter((trade) => trade.exitReason === "take-profit").length
@@ -556,14 +569,29 @@ export default function IctStrategyChart() {
                 <p className="mt-0.5 text-lg font-bold tabular-nums text-amber-200">{formatPrice(paperState.openPosition.entryPrice)}</p>
               </div>
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">TP 익절가</p>
-                <p className="mt-0.5 text-lg font-bold tabular-nums text-emerald-300">{formatPrice(paperState.openPosition.takeProfit)}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+                  {paperState.openPosition.takeProfit2 != null ? "TP 익절가 (1차/2차)" : "TP 익절가"}
+                </p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-emerald-300">
+                  {formatPrice(paperState.openPosition.takeProfit)}
+                  {paperState.openPosition.takeProfit2 != null && (
+                    <span className="block text-sm text-emerald-300/80">{formatPrice(paperState.openPosition.takeProfit2)}</span>
+                  )}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">SL 손절가</p>
                 <p className="mt-0.5 text-lg font-bold tabular-nums text-rose-300">{formatPrice(paperState.openPosition.stopLoss)}</p>
               </div>
             </div>
+
+            <PartialExitsNote
+              exits={paperState.openPosition.partialExits}
+              realizedPnlUsdt={paperState.openPosition.realizedPnlUsdt}
+              unit="계약"
+              remainingSize={paperState.openPosition.lastSize}
+              nextTarget={paperState.openPosition.takeProfit2}
+            />
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">

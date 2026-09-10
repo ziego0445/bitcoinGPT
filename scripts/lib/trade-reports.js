@@ -86,6 +86,18 @@ function closeReport(reports, entryTime, exit) {
   return true;
 }
 
+// A ladder exits in legs (half at TP1, the rest at TP2), and the position only counts as
+// closed once the last leg fills — without this the journal showed nothing at all after
+// a real TP1 fill, as if the trade hadn't moved. Mirrors the bot's own
+// openPosition.partialExits onto the still-open report so the card can show it.
+function updateReportPartials(reports, entryTime, partialExits, realizedPnlUsdt) {
+  const report = [...reports].reverse().find((r) => r.status === "open" && r.entryTime === entryTime);
+  if (!report) return false;
+  report.partialExits = partialExits;
+  report.realizedPnlUsdt = realizedPnlUsdt;
+  return true;
+}
+
 function buildOutcomeSummary({ exitReason, pnlPct, holdingMinutes, entryPrice, exitPrice }) {
   const resultLabel = exitReason === "take-profit" ? "익절" : exitReason === "stop-loss" ? "손절" : exitReason;
   const durationLabel = holdingMinutes < 60 ? `${holdingMinutes}분` : `${(holdingMinutes / 60).toFixed(1)}시간`;
@@ -93,4 +105,4 @@ function buildOutcomeSummary({ exitReason, pnlPct, holdingMinutes, entryPrice, e
   return `${resultLabel} 종료 · ${pnlLabel} · 보유 ${durationLabel} · 진입 $${entryPrice.toLocaleString()} → 청산 $${exitPrice.toLocaleString()}`;
 }
 
-module.exports = { loadReports, saveReports, openReport, closeReport, MAX_REPORTS };
+module.exports = { loadReports, saveReports, openReport, closeReport, updateReportPartials, MAX_REPORTS };

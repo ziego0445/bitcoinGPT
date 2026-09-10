@@ -36,7 +36,7 @@ const { detectICTSignals } = require("./lib/ict-signals");
 const okx = require("./lib/okx-client");
 const { sendTelegram } = require("./lib/telegram");
 const { renderCandleSnapshot } = require("./lib/chart-snapshot");
-const { loadReports, saveReports, openReport, closeReport } = require("./lib/trade-reports");
+const { loadReports, saveReports, openReport, closeReport, updateReportPartials } = require("./lib/trade-reports");
 
 async function notify(text) {
   try {
@@ -186,15 +186,69 @@ function adoptUntrackedPosition(state, position) {
 // Watches a live ladder: when a resting tranche fills, the exchange position grows, so
 // that tranche's own exits get placed. The exchange's size is the source of truth, so a
 // fill that happened while this process was down is still picked up on the next tick.
-async function manageOpenPosition(config, contract, state, position) {
+// Records exit legs that filled while the position is still open — see live-trade.js's
+// copy for why. This ladder's own exits carry clOrdId ict<signalTime>x<tranche><a|b>
+// (a = TP1, b = TP2); anything else trading the account is ignored. Returns false if
+// order history couldn't be read, so the caller retries next tick.
+async function recordPartialExits(config, state, opened, position, reports) {
+  const history = await okx.getHistoryOrders(config, { startTime: opened.entryTime - 60_000 }).catch(() => null);
+  if (!history) return false;
+  const exits = history
+    .filter(
+      (o) =>
+        String(o.clOrdId ?? "").startsWith(`ict${opened.signalCandleTime}x`) &&
+        (o.reduceOnly === true || o.reduceOnly === "true") &&
+        Number(o.accFillSz ?? 0) > 0,
+    )
+    .sort((a, b) => Number(a.uTime ?? a.cTime) - Number(b.uTime ?? b.cTime))
+    .map((o) => ({
+      time: Number(o.uTime ?? o.cTime),
+      price: Number(o.avgPx),
+      size: Number(o.accFillSz), // contracts
+      tag: String(o.clOrdId).endsWith("b") ? "tp2" : "tp1",
+      pnlUsdt: Number(o.pnl ?? 0) + Number(o.fee ?? 0), // fee is negative
+    }));
+  const known = opened.partialExits?.length ?? 0;
+  if (exits.length <= known) return true; // shrank for some other reason (e.g. a manual close)
+
+  if (opened.balanceBefore == null) opened.balanceBefore = state.currentBalance;
+  opened.partialExits = exits;
+  opened.realizedPnlUsdt = exits.reduce((sum, e) => sum + e.pnlUsdt, 0);
+  const account = await okx.getAccount(config).catch(() => null);
+  if (account) state.currentBalance = account.equity - (position.unrealizedPL || 0);
+  updateReportPartials(reports, opened.entryTime, exits, opened.realizedPnlUsdt);
+
+  for (const e of exits.slice(known)) {
+    log(`Partial exit ${e.tag}: ${e.size} contracts @ ${e.price} (${e.pnlUsdt >= 0 ? "+" : ""}${e.pnlUsdt.toFixed(4)} USDT)`);
+    await notify(
+      [
+        `ICT 분할 익절 체결 (${e.tag === "tp1" ? "1차" : "2차"}, ${opened.direction})`,
+        `수량: ${e.size} 계약 @ $${e.price.toLocaleString()}`,
+        `실현손익: ${e.pnlUsdt >= 0 ? "+" : ""}$${e.pnlUsdt.toFixed(2)} (수수료 포함)`,
+        `잔여: ${position.contracts} 계약 · 손절 $${opened.stopLoss.toFixed(1)} 유지`,
+      ].join("\n"),
+    );
+  }
+  return true;
+}
+
+async function manageOpenPosition(config, contract, state, position, reports) {
   const opened = state.openPosition;
   if (!opened || !opened.trancheSize) return; // pre-ladder position (e.g. "recovered")
 
   if (position.avgPrice) opened.entryPrice = position.avgPrice;
 
+  const size = position.contracts;
+  // Size seen on the previous tick; a drop means an exit leg filled in between.
+  const lastSize = opened.lastSize ?? opened.peakSize ?? size;
+  if (size < lastSize - 1e-9) {
+    if (await recordPartialExits(config, state, opened, position, reports)) opened.lastSize = size;
+  } else {
+    opened.lastSize = size;
+  }
+
   // Once any exit has fired, stop adding — see live-trade.js's copy of this guard for why
   // (the backtest only fills tranches before anything is taken off).
-  const size = position.contracts;
   opened.peakSize = Math.max(opened.peakSize ?? size, size);
   if (size < opened.peakSize - Number(opened.trancheSize) * 0.1 && !opened.addsClosed) {
     const cancelled = await okx.cancelEntryOrders(config).catch((error) => {
@@ -251,7 +305,7 @@ async function reconcilePosition(config, state, contract, reports) {
   }
   if (position) {
     // Still open — the only thing to do is notice tranche fills and give each its exits.
-    if (contract) await manageOpenPosition(config, contract, state, position);
+    if (contract) await manageOpenPosition(config, contract, state, position, reports);
     return;
   }
   // Flat on the exchange. Anything still resting belongs to a ladder that is now over —
@@ -352,7 +406,8 @@ async function reconcilePosition(config, state, contract, reports) {
     exitPrice,
     exitReason,
     pnlPct,
-    balanceBefore: state.currentBalance,
+    // currentBalance already moved mid-trade if an exit leg filled early (recordPartialExits)
+    balanceBefore: opened.balanceBefore ?? state.currentBalance,
     balanceAfter: account.equity,
     orderId: opened.orderId,
     exitOrderId: closingOrder?.ordId,

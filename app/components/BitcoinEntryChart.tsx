@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import KakaoAd from "./KakaoAd"
+import PartialExitsNote, { type PartialExit } from "./PartialExitsNote"
 
 type Timeframe = "5m" | "15m" | "1h" | "4h"
 type Direction = "LONG" | "WAIT"
@@ -51,6 +52,11 @@ interface PaperOpenPosition {
   takeProfit: number
   stopLoss: number
   orderId?: string
+  // Live ladder only (scripts/live-trade.js) — far target and exit legs filled so far.
+  takeProfit2?: number
+  lastSize?: number
+  partialExits?: PartialExit[]
+  realizedPnlUsdt?: number
 }
 
 interface PaperTrade {
@@ -920,14 +926,29 @@ export default function BitcoinEntryChart() {
                 <p className="mt-0.5 text-lg font-bold tabular-nums text-amber-200">{formatPrice(state.openPosition.entryPrice)}</p>
               </div>
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">TP 익절가</p>
-                <p className="mt-0.5 text-lg font-bold tabular-nums text-emerald-300">{formatPrice(state.openPosition.takeProfit)}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+                  {state.openPosition.takeProfit2 != null ? "TP 익절가 (1차/2차)" : "TP 익절가"}
+                </p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums text-emerald-300">
+                  {formatPrice(state.openPosition.takeProfit)}
+                  {state.openPosition.takeProfit2 != null && (
+                    <span className="block text-sm text-emerald-300/80">{formatPrice(state.openPosition.takeProfit2)}</span>
+                  )}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">SL 손절가</p>
                 <p className="mt-0.5 text-lg font-bold tabular-nums text-rose-300">{formatPrice(state.openPosition.stopLoss)}</p>
               </div>
             </div>
+
+            <PartialExitsNote
+              exits={state.openPosition.partialExits}
+              realizedPnlUsdt={state.openPosition.realizedPnlUsdt}
+              unit="BTC"
+              remainingSize={state.openPosition.lastSize}
+              nextTarget={state.openPosition.takeProfit2}
+            />
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-[#263545] bg-[#080d13] p-4 text-sm text-zinc-500">

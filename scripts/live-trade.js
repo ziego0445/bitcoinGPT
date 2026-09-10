@@ -29,7 +29,7 @@ const { detectSignals, signalTitle, signalReasons } = require("./lib/signals");
 const bitget = require("./lib/bitget-client");
 const { sendTelegram } = require("./lib/telegram");
 const { renderCandleSnapshot } = require("./lib/chart-snapshot");
-const { loadReports, saveReports, openReport, closeReport } = require("./lib/trade-reports");
+const { loadReports, saveReports, openReport, closeReport, updateReportPartials } = require("./lib/trade-reports");
 
 // Telegram notification is best-effort — a Telegram outage must never block or crash the
 // trading loop, so every call site awaits this wrapper instead of sendTelegram() directly.
@@ -229,7 +229,7 @@ async function reconcilePosition(config, state, contract, reports) {
   if (position) {
     // Still open — the only thing to do is notice tranche fills and give each one its
     // own exits.
-    if (contract) await manageOpenPosition(config, contract, state, position);
+    if (contract) await manageOpenPosition(config, contract, state, position, reports);
     return;
   }
   // Flat on the exchange. Whatever is still resting on the book belongs to a ladder that
@@ -348,7 +348,8 @@ async function reconcilePosition(config, state, contract, reports) {
     exitPrice,
     exitReason,
     pnlPct,
-    balanceBefore: state.currentBalance,
+    // currentBalance already moved mid-trade if an exit leg filled early (recordPartialExits)
+    balanceBefore: opened.balanceBefore ?? state.currentBalance,
     balanceAfter: account.equity,
     orderId: opened.orderId,
     exitOrderId: closingOrder?.orderId,
@@ -423,18 +424,76 @@ async function placeTrancheExits(config, contract, trancheSize, tp1, tp2, signal
 // that tranche's own exits get placed. The exchange's position size is the source of truth
 // — comparing it against tranchesFilled is what detects the fill, so a fill that happened
 // while this process was down is still picked up on the next tick.
-async function manageOpenPosition(config, contract, state, position) {
+// Records the ladder's exit legs that have filled while the position is still open (TP1
+// before TP2). A trade is only written to state.trades once the position is flat, so
+// without this a real TP1 fill left no trace anywhere on the dashboard. Only this ladder's
+// own reduce-only fills (clientOid live-<signalTime>-tN-tp1/tp2) count — manual trades on
+// the same account don't. Returns false if order history couldn't be read, so the caller
+// retries next tick instead of marking the shrink as handled.
+async function recordPartialExits(config, state, opened, position, reports) {
+  const history = await bitget.getHistoryOrders(config, { startTime: opened.entryTime - 60_000 }).catch(() => null);
+  if (!history) return false;
+  const exits = history
+    .filter(
+      (o) =>
+        String(o.clientOid ?? "").startsWith(`live-${opened.signalCandleTime}-`) &&
+        o.reduceOnly === "YES" &&
+        Number(o.baseVolume ?? 0) > 0,
+    )
+    .sort((a, b) => Number(a.uTime ?? a.cTime) - Number(b.uTime ?? b.cTime))
+    .map((o) => ({
+      time: Number(o.uTime ?? o.cTime),
+      price: Number(o.priceAvg),
+      size: Number(o.baseVolume),
+      tag: String(o.clientOid).split("-").at(-1), // "tp1" | "tp2"
+      pnlUsdt: Number(o.totalProfits ?? 0) + Number(o.fee ?? 0), // fee is negative
+    }));
+  const known = opened.partialExits?.length ?? 0;
+  if (exits.length <= known) return true; // shrank for some other reason (e.g. a manual sell)
+
+  // Balance before the trade, kept for the final trade record — currentBalance moves below.
+  if (opened.balanceBefore == null) opened.balanceBefore = state.currentBalance;
+  opened.partialExits = exits;
+  opened.realizedPnlUsdt = exits.reduce((sum, e) => sum + e.pnlUsdt, 0);
+  const account = await bitget.getAccount(config).catch(() => null);
+  // Realized balance: equity minus what the still-open remainder is floating.
+  if (account) state.currentBalance = account.equity - (position.unrealizedPL || 0);
+  updateReportPartials(reports, opened.entryTime, exits, opened.realizedPnlUsdt);
+
+  for (const e of exits.slice(known)) {
+    log(`Partial exit ${e.tag}: ${e.size} @ ${e.price} (${e.pnlUsdt >= 0 ? "+" : ""}${e.pnlUsdt.toFixed(4)} USDT)`);
+    await notify(
+      [
+        `분할 익절 체결 (${e.tag === "tp1" ? "1차" : "2차"})`,
+        `수량: ${e.size} BTC @ $${e.price.toLocaleString()}`,
+        `실현손익: ${e.pnlUsdt >= 0 ? "+" : ""}$${e.pnlUsdt.toFixed(2)} (수수료 포함)`,
+        `잔여: ${position.total} BTC · 손절 $${opened.stopLoss.toFixed(1)} 유지`,
+      ].join("\n"),
+    );
+  }
+  return true;
+}
+
+async function manageOpenPosition(config, contract, state, position, reports) {
   const opened = state.openPosition;
   if (!opened || !opened.trancheSize) return; // pre-ladder position (e.g. "recovered") — nothing to manage
 
   // Keep the average entry in sync with reality; every P&L number downstream uses it.
   if (position.openPriceAvg) opened.entryPrice = position.openPriceAvg;
 
+  const size = Number(position.total);
+  // Size seen on the previous tick; a drop means an exit leg filled in between.
+  const lastSize = opened.lastSize ?? opened.peakSize ?? size;
+  if (size < lastSize - 1e-9) {
+    if (await recordPartialExits(config, state, opened, position, reports)) opened.lastSize = size;
+  } else {
+    opened.lastSize = size;
+  }
+
   // Once any exit has fired, stop adding. The backtest this ladder is modelled on only
   // fills tranches while nothing has been taken off yet; leaving the resting limit buys up
   // would let the position re-grow at a worse average against an unchanged stop, which is
   // strictly more risk than was tested. A shrink below the high-water size is the tell.
-  const size = Number(position.total);
   opened.peakSize = Math.max(opened.peakSize ?? size, size);
   if (size < opened.peakSize - Number(opened.trancheSize) * 0.1 && !opened.addsClosed) {
     const cancelled = await bitget.cancelEntryOrders(config).catch((error) => {
