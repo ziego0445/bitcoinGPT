@@ -4,7 +4,24 @@
   "startingBalance": 100.14371825213074,
   "currentBalance": 77.52968690779632,
   "startedAt": 1788241196732,
-  "openPosition": null,
+  "openPosition": {
+    "pattern": "ict-fvg",
+    "direction": "SHORT",
+    "mssType": "BOS",
+    "leverage": 10,
+    "size": 73.6532025624065,
+    "entryTime": 1789021811003,
+    "entryPrice": 78184.3,
+    "firstEntryPrice": 78184.3,
+    "riskPerUnit": 335.6000000000058,
+    "trancheSize": "0.31",
+    "tranchesFilled": 1,
+    "signalCandleTime": 1789020900000,
+    "takeProfit": 77848.79999999999,
+    "takeProfit2": 77177.59999999998,
+    "stopLoss": 78721.36,
+    "orderId": "3909742653206089728"
+  },
   "trades": [
     {
       "pattern": "ict-fvg",
