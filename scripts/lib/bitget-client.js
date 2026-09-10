@@ -159,7 +159,9 @@ async function getContractConfig(config) {
 }
 
 function roundSize(size, contract) {
-  const stepped = Math.floor(size / contract.step) * contract.step;
+  // The epsilon absorbs float error: 0.0006 / 0.0001 evaluates to 5.999999999999999, so a
+  // bare floor lands one step short (0.0005) on a value that is exactly on a step.
+  const stepped = Math.floor(size / contract.step + 1e-9) * contract.step;
   const bounded = Math.max(stepped, contract.minTradeNum);
   return bounded.toFixed(contract.volumePlace);
 }

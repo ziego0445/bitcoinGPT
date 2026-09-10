@@ -145,7 +145,9 @@ async function getContractConfig(config) {
 // rounds down to the lot step and up to the minimum, same shape as Bitget's roundSize().
 function roundSize(btcAmount, contract) {
   const contracts = btcAmount / contract.ctVal;
-  const stepped = Math.floor(contracts / contract.lotSz) * contract.lotSz;
+  // The epsilon absorbs float error: 0.06 / 0.01 evaluates to 5.999999999999999, so a
+  // bare floor lands one step short on a value that is exactly on a step.
+  const stepped = Math.floor(contracts / contract.lotSz + 1e-9) * contract.lotSz;
   const bounded = Math.max(stepped, contract.minSz);
   const decimals = (String(contract.lotSz).split(".")[1] || "").length;
   return bounded.toFixed(decimals);
