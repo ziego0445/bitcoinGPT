@@ -613,7 +613,7 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
     reasonDetail: buildReasonText(latest),
     entryTime,
     entryPrice,
-    takeProfit,
+    takeProfit: takeProfit1,
     stopLoss,
     chartSvg,
   });

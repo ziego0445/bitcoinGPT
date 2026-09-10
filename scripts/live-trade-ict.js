@@ -393,7 +393,7 @@ function buildReasonText(signal, closedCandles) {
   const sweepTime = closedCandles[signal.sweepIndex]?.time;
   const mssTime = closedCandles[signal.mssIndex]?.time;
   return [
-    `패턴: ICT 유동성 스윕 → ${signal.mssType} → FVG 진입 (LONG)`,
+    `패턴: ICT 유동성 스윕 → ${signal.mssType} → FVG 진입 (${signal.direction})`,
     signal.detail,
     `① 유동성 스윕: ${sweepTime ? new Date(sweepTime).toLocaleString("ko-KR") : "-"} · $${signal.sweepPrice.toLocaleString()}`,
     `② ${signal.mssType}: ${mssTime ? new Date(mssTime).toLocaleString("ko-KR") : "-"} · $${signal.mssLevel.toLocaleString()}`,
