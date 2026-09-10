@@ -228,6 +228,20 @@ async function manageOpenPosition(config, contract, state, position) {
   );
 }
 
+// Size-weighted average price across a set of fills, or null when there are none.
+function ladderAverage(orders, sizeOf, priceOf) {
+  let weighted = 0;
+  let total = 0;
+  for (const order of orders) {
+    const size = sizeOf(order);
+    const price = priceOf(order);
+    if (!(size > 0) || !(price > 0)) continue;
+    weighted += size * price;
+    total += size;
+  }
+  return total > 0 ? weighted / total : null;
+}
+
 async function reconcilePosition(config, state, contract, reports) {
   const position = await okx.getPosition(config);
 
@@ -285,8 +299,30 @@ async function reconcilePosition(config, state, contract, reports) {
   let exitPrice;
   let exitReason;
 
+  // The ladder's own average entry, from its own entry fills (clOrdId ict<signalTime>,
+  // ict<signalTime>t2, ...t3 — the exits carry the same prefix but are reduce-only).
+  // opened.entryPrice is kept in sync with the exchange's position average while open,
+  // which is wrong the moment anything else trades this account; the bot's own fills
+  // aren't.
+  const ownEntryPrice = ladderAverage(
+    history.filter(
+      (o) =>
+        String(o.clOrdId ?? "").startsWith(`ict${opened.signalCandleTime}`) &&
+        !(o.reduceOnly === true || o.reduceOnly === "true") &&
+        Number(o.accFillSz ?? 0) > 0,
+    ),
+    (o) => Number(o.accFillSz),
+    (o) => Number(o.avgPx),
+  );
+  if (ownEntryPrice != null) opened.entryPrice = ownEntryPrice;
+
   if (closingOrder) {
-    exitPrice = Number(closingOrder.avgPx ?? closingOrder.fillPx ?? closingOrder.px);
+    // Size-weighted across every leg that closed the ladder, not just the last one — the
+    // last leg alone recorded a clean 1R+3R short as its 0.03-contract dust close at
+    // 76,939.9 (+17.6%) when the real blended exit was ~77,495 (~+10.5%).
+    exitPrice =
+      ladderAverage(closingOrders, (o) => Number(o.accFillSz ?? o.sz ?? 0), (o) => Number(o.avgPx ?? o.fillPx ?? o.px)) ??
+      Number(closingOrder.avgPx ?? closingOrder.fillPx ?? closingOrder.px);
     const nearTakeProfit = opened.takeProfit != null && Math.abs(exitPrice - opened.takeProfit) / opened.takeProfit < 0.001;
     const nearStopLoss = opened.stopLoss != null && Math.abs(exitPrice - opened.stopLoss) / opened.stopLoss < 0.001;
     if (nearTakeProfit && !nearStopLoss) exitReason = "take-profit";

@@ -275,6 +275,29 @@ async function reconcilePosition(config, state, contract, reports) {
   if (expectedSize == null && closingOrders.length > 1) closingOrders.length = 1;
   const closingOrder = closingOrders.at(-1); // for exitOrderId/exitTime below
 
+  // The ladder's own average entry, from its own entry fills (clientOid live-<signalTime>,
+  // -t2, -t3; the exits share the prefix but are reduce-only). opened.entryPrice tracks the
+  // exchange's position average while open, and that stops meaning "this ladder" the moment
+  // anything else trades the account — a manual buy on top of a live ladder moved it from
+  // 78,137 to 77,044 for real. The bot's own fills can't be polluted that way.
+  {
+    let weighted = 0;
+    let total = 0;
+    for (const o of history) {
+      const ownEntry =
+        opened.signalCandleTime != null &&
+        String(o.clientOid ?? "").startsWith(`live-${opened.signalCandleTime}`) &&
+        o.reduceOnly !== "YES";
+      const size = Number(o.baseVolume ?? 0);
+      const price = Number(o.priceAvg ?? 0);
+      if (ownEntry && size > 0 && price > 0) {
+        weighted += size * price;
+        total += size;
+      }
+    }
+    if (total > 0) opened.entryPrice = weighted / total;
+  }
+
   const account = await bitget.getAccount(config);
   let exitPrice;
   let exitReason;
