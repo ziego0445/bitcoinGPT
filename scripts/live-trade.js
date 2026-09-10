@@ -368,16 +368,20 @@ async function resolveMarginUsdt(config) {
 // target" without ever cancelling and re-placing a live order.
 async function placeTrancheExits(config, contract, trancheSize, tp1, tp2, signalTime, trancheNumber) {
   const half = bitget.roundSize(Number(trancheSize) / 2, contract);
-  // roundSize() rounds UP to the contract minimum, so on a very small tranche "half" can
-  // come back as the whole thing — two of those would exceed the position and the exchange
-  // rejects the second (seen for real on a minimum-size rehearsal). Fall back to one
-  // order at the near target, which is the leg most likely to fill anyway.
+  // The far leg takes whatever the near leg didn't, NOT a second copy of `half`. roundSize()
+  // floors, so two equal "halves" of an odd-lot tranche sum to less than the tranche —
+  // 0.0042 split as 0.002 + 0.002 left 0.0002 per tranche unsold. That dust kept the
+  // position open after every exit had filled, so the bot never recorded the trade and
+  // stayed blocked from new entries (hit for real on the ICT bot, same code shape here).
+  const rest = (Number(trancheSize) - Number(half)).toFixed(contract.volumePlace);
+  // roundSize() also rounds UP to the contract minimum, so on a very small tranche "half"
+  // can come back as the whole thing — fall back to one order at the near target.
   const exits =
     Number(half) * 2 > Number(trancheSize)
       ? [[tp1, "tp1", trancheSize]]
       : [
           [tp1, "tp1", half],
-          [tp2, "tp2", half],
+          [tp2, "tp2", rest],
         ];
   for (const [price, tag, size] of exits) {
     await bitget

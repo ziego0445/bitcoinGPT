@@ -382,15 +382,19 @@ function dominantDirection(signals, uptoIndex) {
 // target without ever resizing a live order.
 async function placeTrancheExits(config, contract, trancheSize, isLong, tp1, tp2, signalTime, trancheNumber) {
   const half = okx.roundSize((Number(trancheSize) * contract.ctVal) / 2, contract);
-  // roundSize() rounds up to the contract minimum, so on a small tranche "half" can come
-  // back as the whole thing — two of those would exceed the position and the exchange
-  // rejects the second. Fall back to a single order at the near target.
+  // The far leg takes the remainder, not a second `half` — see live-trade.js's copy. Here
+  // 0.31 contracts split as 0.15 + 0.15 left 0.01 per tranche; after a clean 1R + 3R win
+  // on all three tranches, 0.03 contracts stayed open and blocked the bot.
+  const lotDecimals = (String(contract.lotSz).split(".")[1] || "").length;
+  const rest = (Number(trancheSize) - Number(half)).toFixed(lotDecimals);
+  // roundSize() also rounds up to the contract minimum, so on a small tranche "half" can
+  // come back as the whole thing — fall back to a single order at the near target.
   const exits =
     Number(half) * 2 > Number(trancheSize)
       ? [[tp1, "a", trancheSize]]
       : [
           [tp1, "a", half],
-          [tp2, "b", half],
+          [tp2, "b", rest],
         ];
   for (const [price, tag, size] of exits) {
     await okx
