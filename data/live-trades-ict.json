@@ -2,39 +2,25 @@
   "mode": "live",
   "strategy": "ict-fvg",
   "startingBalance": 30.87732194920962,
-  "currentBalance": 31.00159956520962,
+  "currentBalance": 31.51925186920962,
   "startedAt": 1789045358687,
-  "openPosition": {
-    "pattern": "ict-fvg",
-    "direction": "SHORT",
-    "mssType": "MSS",
-    "leverage": 10,
-    "size": 29.333455851749136,
-    "entryTime": 1789119030683,
-    "entryPrice": 77108.8,
-    "firstEntryPrice": 77108.8,
-    "riskPerUnit": 289.20000000001164,
-    "trancheSize": "0.12",
-    "tranchesFilled": 1,
-    "signalCandleTime": 1789118100000,
-    "takeProfit": 76809.19999999998,
-    "takeProfit2": 76230.79999999996,
-    "stopLoss": 77561.12000000001,
-    "orderId": "3913004804347711488",
-    "lastSize": 0.06,
-    "peakSize": 0.12,
-    "balanceBefore": 30.87732194920962,
-    "partialExits": [
-      {
-        "time": 1789124798184,
-        "price": 76809.2,
-        "size": 0.06,
-        "tag": "tp1",
-        "pnlUsdt": 0.170542896
-      }
-    ],
-    "realizedPnlUsdt": 0.170542896,
-    "addsClosed": true
-  },
-  "trades": []
+  "openPosition": null,
+  "trades": [
+    {
+      "pattern": "ict-fvg",
+      "direction": "SHORT",
+      "mssType": "MSS",
+      "leverage": 10,
+      "entryTime": 1789119030683,
+      "entryPrice": 77108.8,
+      "exitTime": 1789129817469,
+      "exitPrice": 76520,
+      "exitReason": "take-profit",
+      "pnlPct": 7.635963729172324,
+      "balanceBefore": 30.87732194920962,
+      "balanceAfter": 31.51925186920962,
+      "orderId": "3913004804347711488",
+      "exitOrderId": "3913004881053143040"
+    }
+  ]
 }
