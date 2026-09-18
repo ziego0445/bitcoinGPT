@@ -2,61 +2,9 @@
   "mode": "live",
   "strategy": "ict-fvg",
   "startingBalance": 30.87732194920962,
-  "currentBalance": 33.31620872259104,
+  "currentBalance": 35.006933487924364,
   "startedAt": 1789045358687,
-  "openPosition": {
-    "pattern": "ict-fvg",
-    "direction": "LONG",
-    "mssType": "MSS",
-    "leverage": 10,
-    "size": 30.140560252200004,
-    "entryTime": 1789626623901,
-    "entryPrice": 76299.83333333333,
-    "firstEntryPrice": 76480,
-    "riskPerUnit": 350.1999999999971,
-    "trancheSize": "0.13",
-    "tranchesFilled": 3,
-    "signalCandleTime": 1789625700000,
-    "takeProfit": 76770.09999999999,
-    "takeProfit2": 77470.49999999999,
-    "stopLoss": 75859.58,
-    "orderId": "3930036806464753664",
-    "lastSize": 0.14,
-    "peakSize": 0.39,
-    "balanceBefore": 31.726905528631583,
-    "partialExits": [
-      {
-        "time": 1789647263131,
-        "price": 76770.1,
-        "size": 0.06,
-        "tag": "tp1",
-        "pnlUsdt": 0.272947588
-      },
-      {
-        "time": 1789647322625,
-        "price": 76830.2,
-        "size": 0.06,
-        "tag": "tp1",
-        "pnlUsdt": 0.309000376
-      },
-      {
-        "time": 1789647322625,
-        "price": 76830.2,
-        "size": 0.06,
-        "tag": "tp1",
-        "pnlUsdt": 0.309000376
-      },
-      {
-        "time": 1789701442613,
-        "price": 77470.5,
-        "size": 0.07,
-        "tag": "tp2",
-        "pnlUsdt": 0.8086207966666666
-      }
-    ],
-    "realizedPnlUsdt": 1.6995691366666668,
-    "addsClosed": true
-  },
+  "openPosition": null,
   "trades": [
     {
       "pattern": "ict-fvg",
@@ -105,6 +53,22 @@
       "balanceAfter": 31.726905528631583,
       "orderId": "3920342437742694400",
       "exitOrderId": "3920901711237664769"
+    },
+    {
+      "pattern": "ict-fvg",
+      "direction": "LONG",
+      "mssType": "MSS",
+      "leverage": 10,
+      "entryTime": 1789626623901,
+      "entryPrice": 76299.83333333334,
+      "exitTime": 1789701465996,
+      "exitPrice": 77187.30512820512,
+      "exitReason": "take-profit",
+      "pnlPct": 11.631372653130828,
+      "balanceBefore": 31.726905528631583,
+      "balanceAfter": 35.006933487924364,
+      "orderId": "3930036806464753664",
+      "exitOrderId": "3930503998142599168"
     }
   ]
 }
