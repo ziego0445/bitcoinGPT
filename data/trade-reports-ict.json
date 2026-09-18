@@ -148,8 +148,15 @@
         "size": 0.06,
         "tag": "tp1",
         "pnlUsdt": 0.309000376
+      },
+      {
+        "time": 1789701442613,
+        "price": 77470.5,
+        "size": 0.07,
+        "tag": "tp2",
+        "pnlUsdt": 0.8086207966666666
       }
     ],
-    "realizedPnlUsdt": 0.89094834
+    "realizedPnlUsdt": 1.6995691366666668
   }
 ]
