@@ -41,6 +41,7 @@ interface PaperOpenPosition {
 interface PaperTrade {
   pattern: string
   mssType: "MSS" | "BOS"
+  direction?: Direction
   leverage: number
   entryTime: number
   entryPrice: number
@@ -93,6 +94,23 @@ const CANDLE_LIMIT = 200
 const SWING_STRENGTH = 2
 const SWEEP_LOOKBACK = 40
 const MSS_MAX_GAP = 15
+
+// Live-bot settings, mirrored from scripts/live-trade-ict.js (keep in sync). Shown in the
+// "현재 셋팅" panel; the direction vote is recomputed here the same way the bot does it.
+const BOT = {
+  leverage: 10,
+  trancheStepR: 0.4,
+  tp1R: 1.0,
+  tp2R: 3.0,
+  stopR: 1.6,
+  directionLookback: 20,
+  directionMinEdge: 1,
+  granularity: "15m",
+}
+// The bot's vote reads ~44 signals' worth of history (1500 15m candles); the 200-candle
+// chart window is far too short for that, so the lean uses its own longer 15m fetch.
+const LEAN_CANDLE_PAGES = 2
+const LEAN_PAGE_SIZE = 750
 
 function getSwingPoints(candles: Candle[], strength = SWING_STRENGTH) {
   const highs: SwingPoint[] = []
@@ -401,6 +419,50 @@ export default function IctStrategyChart() {
     }
   }, [timeframe])
 
+  const [leanCandles, setLeanCandles] = useState<Candle[]>([])
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      try {
+        let all: Candle[] = []
+        let endTime: number | undefined
+        for (let page = 0; page < LEAN_CANDLE_PAGES; page += 1) {
+          const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${BOT.granularity}&limit=${LEAN_PAGE_SIZE}${endTime ? `&endTime=${endTime}` : ""}`
+          const response = await fetch(url)
+          if (!response.ok) throw new Error(`Binance ${response.status}`)
+          const rows = (await response.json()) as [number, string, string, string, string, string][]
+          if (!rows.length) break
+          all = rows
+            .map((row) => ({ time: row[0], open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[5]) }))
+            .concat(all)
+          endTime = rows[0][0] - 1
+        }
+        if (!cancelled && all.length) setLeanCandles(all)
+      } catch {
+        // Keep the last known lean — the settings panel just shows "계산 중" until one lands.
+      }
+    }
+
+    load()
+    const interval = window.setInterval(load, 120_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [])
+
+  // Same vote as dominantDirection() in scripts/live-trade-ict.js: the last N signals, one
+  // side must lead by more than the minimum edge, otherwise no clear lean (= skip trades).
+  const lean = useMemo(() => {
+    if (leanCandles.length < 100) return null
+    const voted = detectIctSignals(leanCandles.slice(0, -1)).slice(-BOT.directionLookback)
+    const longs = voted.filter((s) => s.direction === "LONG").length
+    const shorts = voted.length - longs
+    const side: Direction | null = longs > shorts + BOT.directionMinEdge ? "LONG" : shorts > longs + BOT.directionMinEdge ? "SHORT" : null
+    return { voted, longs, shorts, side }
+  }, [leanCandles])
+
   const closedCandles = useMemo(() => candles.slice(0, -1), [candles])
   const signals = useMemo(() => (closedCandles.length ? detectIctSignals(closedCandles) : []), [closedCandles])
   const recentSignals = useMemo(() => signals.slice(-10), [signals])
@@ -510,7 +572,7 @@ export default function IctStrategyChart() {
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <StatPill label={isLive ? "유동성 스윕 → MSS/BOS → FVG (최근 우세방향 추종)" : "유동성 스윕 → MSS/BOS → FVG (LONG only)"} />
           <StatPill label="10x 레버리지" />
-          <StatPill label="R=2 목표 (2R:1R)" />
+          <StatPill label={isLive ? `3분할 · 익절 ${BOT.tp1R}R/${BOT.tp2R}R · 손절 ${BOT.stopR}R` : "R=2 목표 (2R:1R)"} />
           <StatPill
             label={winRatePct !== null ? `승률 ${winRatePct.toFixed(0)}% (${winCount}/${closedTrades.length})` : "승률 집계 전"}
             tone={winRatePct === null ? "neutral" : winRatePct >= 50 ? "good" : "warn"}
@@ -520,7 +582,7 @@ export default function IctStrategyChart() {
         <div className="mb-4">
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
             {isLive
-              ? "Live trading · OKX 실계좌 · 유동성 스윕→MSS→FVG · 10x 레버리지 · R=2"
+              ? "Live trading · OKX 실계좌 · 유동성 스윕→MSS→FVG · 10x 레버리지 · 3분할 진입/분할 익절"
               : "$100 모의투자 · 유동성 스윕→MSS→FVG · R=2"}
           </p>
           <h2 className="mt-0.5 text-sm font-semibold text-zinc-400">{isLive ? "실전매매 현황 (Live)" : "모의투자 현황"}</h2>
@@ -600,6 +662,94 @@ export default function IctStrategyChart() {
               : "현재 보유중인 모의 포지션이 없습니다. LONG 신호가 뜨면 GitHub Actions가 자동으로 진입시킵니다."}
           </div>
         )}
+      </section>
+
+      <section className="border-b border-[#1a2432] bg-[#0a0e15] px-5 py-5 lg:px-7">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Bot settings</p>
+            <h2 className="mt-0.5 text-sm font-semibold text-zinc-200">현재 셋팅 — 봇이 지금 이렇게 매매합니다</h2>
+          </div>
+          {lean ? (
+            <span
+              className={`rounded-full border px-3 py-1.5 text-xs font-bold ${
+                lean.side === "LONG"
+                  ? "border-cyan-400/40 bg-cyan-300/10 text-cyan-200"
+                  : lean.side === "SHORT"
+                    ? "border-orange-400/40 bg-orange-300/10 text-orange-200"
+                    : "border-[#28394b] bg-[#0a1017] text-zinc-300"
+              }`}
+            >
+              {lean.side === "LONG" ? "지금 추종: 롱 (LONG)" : lean.side === "SHORT" ? "지금 추종: 숏 (SHORT)" : "지금 추종: 없음 (관망 — 신호가 떠도 건너뜀)"}
+            </span>
+          ) : (
+            <span className="text-xs text-zinc-500">추종 방향 계산 중...</span>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-[#1c2733] bg-[#080d13] p-4">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+            방향 표결 — 최근 {BOT.directionLookback}개 신호 (왼쪽 오래됨 → 오른쪽 최신)
+          </p>
+          {lean ? (
+            <>
+              <div className="mt-2 flex flex-wrap items-center gap-1">
+                {lean.voted.map((signal, i) => (
+                  <span
+                    key={`${signal.index}-${i}`}
+                    title={`${signal.direction} · ${signal.mssType}`}
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md text-[10px] font-bold ${
+                      signal.direction === "LONG" ? "bg-cyan-300/15 text-cyan-300" : "bg-orange-300/15 text-orange-300"
+                    }`}
+                  >
+                    {signal.direction === "LONG" ? "L" : "S"}
+                  </span>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-zinc-400">
+                <span className="font-semibold text-cyan-300">롱 {lean.longs}</span> : <span className="font-semibold text-orange-300">숏 {lean.shorts}</span> — 한쪽이{" "}
+                {BOT.directionMinEdge}개 초과로 앞서야 그 방향만 진입합니다.{" "}
+                {lean.side ? `지금은 ${lean.side === "LONG" ? "롱" : "숏"}만 진입하고 반대 신호는 건너뜁니다.` : "지금은 차이가 부족해서 어느 쪽 신호가 떠도 진입하지 않습니다."}
+              </p>
+            </>
+          ) : (
+            <p className="mt-2 text-xs text-zinc-500">15분봉 히스토리를 불러오는 중입니다...</p>
+          )}
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2.5 lg:grid-cols-5">
+          <div className="rounded-xl border border-[#1c2733] bg-[#080d13] p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">진입 (3분할)</p>
+            <p className="mt-1 text-sm font-bold text-zinc-200">시장가 + 지정가 2개</p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">
+              {BOT.trancheStepR}R / {BOT.trancheStepR * 2}R 더 불리한 가격에 추가 대기
+            </p>
+          </div>
+          <div className="rounded-xl border border-[#1c2733] bg-[#080d13] p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">익절 (분할)</p>
+            <p className="mt-1 text-sm font-bold text-emerald-300">
+              절반 +{BOT.tp1R}R · 절반 +{BOT.tp2R}R
+            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">1R = 진입가 ~ 스윕 극값 거리</p>
+          </div>
+          <div className="rounded-xl border border-[#1c2733] bg-[#080d13] p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">손절</p>
+            <p className="mt-1 text-sm font-bold text-rose-300">첫 진입가 기준 {BOT.stopR}R</p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">거래소에 걸려 있어 봇이 꺼져도 유효</p>
+          </div>
+          <div className="rounded-xl border border-[#1c2733] bg-[#080d13] p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">레버리지 · 봉</p>
+            <p className="mt-1 text-sm font-bold text-zinc-200">
+              {BOT.leverage}x · {BOT.granularity}
+            </p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">증거금 고정 금액 (OKX)</p>
+          </div>
+          <div className="col-span-2 rounded-xl border border-[#1c2733] bg-[#080d13] p-3 lg:col-span-1">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">백테스트 (150일)</p>
+            <p className="mt-1 text-sm font-bold text-zinc-200">100 → 186.5</p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">85건 · 승률 51.8% · MDD 18%</p>
+          </div>
+        </div>
       </section>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[#1a2432] bg-[#0a0e15] px-5 py-3 text-[11px] lg:px-7">
@@ -870,7 +1020,7 @@ export default function IctStrategyChart() {
                   <th className="py-2 pr-3">진입</th>
                   <th className="py-2 pr-3">청산</th>
                   <th className="py-2 pr-3">손익</th>
-                  <th className="py-2">MSS/BOS</th>
+                  <th className="py-2">방향 · MSS/BOS</th>
                 </tr>
               </thead>
               <tbody>
@@ -883,7 +1033,9 @@ export default function IctStrategyChart() {
                     </td>
                     <td className="py-2.5 pr-3 text-zinc-600">-</td>
                     <td className="py-2.5 pr-3 text-zinc-600">-</td>
-                    <td className="py-2.5 text-zinc-400">{paperState.openPosition.mssType}</td>
+                    <td className="py-2.5 text-zinc-400">
+                      {paperState.openPosition.direction ?? "LONG"} · {paperState.openPosition.mssType}
+                    </td>
                   </tr>
                 )}
                 {[...paperState.trades].reverse().map((trade) => {
@@ -909,7 +1061,9 @@ export default function IctStrategyChart() {
                         {trade.pnlPct >= 0 ? "+" : ""}
                         {trade.pnlPct.toFixed(2)}%
                       </td>
-                      <td className="py-2.5 text-zinc-500">{trade.mssType}</td>
+                      <td className="py-2.5 text-zinc-500">
+                        {trade.direction ?? "LONG"} · {trade.mssType}
+                      </td>
                     </tr>
                   )
                 })}
