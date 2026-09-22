@@ -9,17 +9,17 @@
     "leverage": 10,
     "size": 29.995629023,
     "entryTime": 1790044218982,
-    "entryPrice": 85742.2,
+    "entryPrice": 85554.3,
     "firstEntryPrice": 85742.2,
     "trancheSize": "0.0011",
-    "tranchesFilled": 1,
+    "tranchesFilled": 2,
     "signalCandleTime": 1790043300000,
     "takeProfit": 86223.4552,
     "takeProfit2": 87080.5472,
     "stopLoss": 83995.01599999999,
     "orderId": "1486118655807361204",
-    "lastSize": 0.0011,
-    "peakSize": 0.0011
+    "lastSize": 0.0022,
+    "peakSize": 0.0022
   },
   "trades": [
     {
