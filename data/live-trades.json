@@ -1,7 +1,7 @@
 {
   "mode": "live",
   "startingBalance": 30.047330594148,
-  "currentBalance": 25.907350445265,
+  "currentBalance": 26.063900681265,
   "startedAt": 1789045358687,
   "openPosition": {
     "pattern": "double-bottom",
@@ -18,8 +18,20 @@
     "takeProfit2": 83511.136,
     "stopLoss": 80552.08,
     "orderId": "1492090478105628673",
-    "lastSize": 0.0009,
-    "peakSize": 0.0009
+    "lastSize": 0.0005,
+    "peakSize": 0.0009,
+    "balanceBefore": 25.907350445265,
+    "partialExits": [
+      {
+        "time": 1791469251037,
+        "price": 82689.2,
+        "size": 0.0004,
+        "tag": "tp1",
+        "pnlUsdt": 0.18614487
+      }
+    ],
+    "realizedPnlUsdt": 0.18614487,
+    "addsClosed": true
   },
   "trades": [
     {
