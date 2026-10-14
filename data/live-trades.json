@@ -3,7 +3,22 @@
   "startingBalance": 30.047330594148,
   "currentBalance": 21.484291802995,
   "startedAt": 1789045358687,
-  "openPosition": null,
+  "openPosition": {
+    "pattern": "double-bottom",
+    "score": 87,
+    "leverage": 10,
+    "size": 20.41007721,
+    "entryTime": 1792017019571,
+    "entryPrice": 81599.5,
+    "firstEntryPrice": 81599.5,
+    "trancheSize": "0.0008",
+    "tranchesFilled": 1,
+    "signalCandleTime": 1792016100000,
+    "takeProfit": 82075.31480000001,
+    "takeProfit2": 82891.1728,
+    "stopLoss": 79954.084,
+    "orderId": "1494393181209006081"
+  },
   "trades": [
     {
       "pattern": "double-bottom",
