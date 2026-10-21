@@ -2,54 +2,9 @@
   "mode": "live",
   "strategy": "ict-fvg",
   "startingBalance": 30.87732194920962,
-  "currentBalance": 22.413171737675754,
+  "currentBalance": 25.199323065790832,
   "startedAt": 1789045358687,
-  "openPosition": {
-    "pattern": "ict-fvg",
-    "direction": "LONG",
-    "mssType": "MSS",
-    "leverage": 10,
-    "size": 20.309399342812146,
-    "entryTime": 1792179008266,
-    "entryPrice": 81289.9,
-    "firstEntryPrice": 81570.6,
-    "riskPerUnit": 698.8000000000029,
-    "trancheSize": "0.08",
-    "tranchesFilled": 3,
-    "signalCandleTime": 1792178100000,
-    "takeProfit": 82267.6,
-    "takeProfit2": 83665.20000000001,
-    "stopLoss": 80450.72,
-    "orderId": "4015680614078009347",
-    "lastSize": 0.12,
-    "peakSize": 0.24,
-    "balanceBefore": 21.378315097696998,
-    "partialExits": [
-      {
-        "time": 1792316474392,
-        "price": 82267.6,
-        "size": 0.04,
-        "tag": "tp1",
-        "pnlUsdt": 0.384498592
-      },
-      {
-        "time": 1792370535258,
-        "price": 82269.4,
-        "size": 0.04,
-        "tag": "tp1",
-        "pnlUsdt": 0.385218448
-      },
-      {
-        "time": 1792370535258,
-        "price": 82269.4,
-        "size": 0.04,
-        "tag": "tp1",
-        "pnlUsdt": 0.385218448
-      }
-    ],
-    "realizedPnlUsdt": 1.154935488,
-    "addsClosed": true
-  },
+  "openPosition": null,
   "trades": [
     {
       "pattern": "ict-fvg",
@@ -258,6 +213,22 @@
       "balanceAfter": 21.378315097696998,
       "orderId": "4009973525456277504",
       "exitOrderId": "4010530876215185410"
+    },
+    {
+      "pattern": "ict-fvg",
+      "direction": "LONG",
+      "mssType": "MSS",
+      "leverage": 10,
+      "entryTime": 1792179008266,
+      "entryPrice": 81289.90000000001,
+      "exitTime": 1792572610556,
+      "exitPrice": 82967.6,
+      "exitReason": "take-profit",
+      "pnlPct": 20.63848030321106,
+      "balanceBefore": 21.378315097696998,
+      "balanceAfter": 25.199323065790832,
+      "orderId": "4015680614078009347",
+      "exitOrderId": "4018145485910626304"
     }
   ]
 }
