@@ -1,23 +1,24 @@
 // Runs continuously on the user's own always-on PC (NOT GitHub Actions — see the note
-// below). Places real Bitget orders off scripts/lib/signals.js's double-bottom pattern
-// (10x leverage, LONG only, score>=85), scaling into each signal and back out again:
-//   - ENTRY is a three-slice ladder: one market buy now, two limit buys resting 0.4% and
-//     0.8% lower. Averaging down is what makes this profitable after fees — see the
-//     TRANCHES block below for the numbers.
-//   - EXIT is split: half the filled size at +0.6%, the rest at +1.6%, both as resting
-//     reduce-only limit sells placed per tranche as that tranche fills.
-//   - the STOP is a single fixed level 2.0% under the FIRST entry, carried as
-//     presetStopLossPrice on every tranche buy, so Bitget's own engine closes the position
-//     at that price even if this process is offline. That is the one guarantee this script
-//     does not manage itself.
-//   - SIZE is set so the whole ladder stopping out loses BITGET_RISK_PCT (default 3%) of
-//     equity — see resolveMarginUsdt().
-//   - candles come from Bitget itself, not Binance, so the signal source matches the
-//     venue we actually trade on.
-//   - the exchange is always the source of truth: each tick reads the real position,
-//     notices tranche fills, and reconciles the local JSON to match. When the position is
-//     flat, every leftover resting order is cancelled — an unfilled tranche buy left on
-//     the book would otherwise re-open a position with no signal behind it.
+// below). Places real Bitget orders off scripts/lib/climax-signals.js — chapter 1 of the
+// strategy PDF ("마지막 봉이 가장 길 때"): buy the capitulation candle of a panic sell-off.
+//   - ENTRY is one market buy at the close of a 15m candle that sits 3%+ under the last 5h
+//     high on 3x+ average volume (the biggest of the last 20 candles).
+//   - SIZE follows how deep the panic went: 1/3, 2/3 or all of the max position for a
+//     3%/4%/5%+ drop (sizeTier()). Max position = ~95% of available balance at 10x.
+//   - EXIT is time-based: the rebound this bets on comes within the hour, so the bot
+//     market-sells the whole position at the close of the 4th candle after the signal.
+//   - the STOP is a fixed 3% under the signal close, carried as presetStopLossPrice on the
+//     entry, so Bitget's own engine closes the position at that price even if this process
+//     is offline (the time exit then happens late, on restart).
+//   - candles come from Bitget itself, so the signal source matches the venue we trade on.
+//   - the exchange is always the source of truth: each tick reads the real position and
+//     reconciles the local JSON to match. When flat, every leftover resting order is
+//     cancelled.
+//
+// This replaced a double-bottom ladder (3 averaging-down tranches, TP 0.6%/1.6%, stop 2%)
+// that a 2-year backtest showed losing ~1% of the account per trade — its signals had no
+// more edge than a random long. The ladder-management code below stays for positions the
+// old strategy opened (manageOpenPosition() still finishes them the old way).
 //
 // This script is intentionally NOT wired into .github/workflows/*.yml. It needs a real
 // API key with trade permission, and CI runner IPs are unpredictable (can't be
@@ -27,7 +28,8 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { detectSignals, signalTitle, signalReasons } = require("./lib/signals");
+const { signalTitle, signalReasons } = require("./lib/signals");
+const { detectPanicClimax, sizeTier } = require("./lib/climax-signals");
 const bitget = require("./lib/bitget-client");
 const { sendTelegram } = require("./lib/telegram");
 const { renderCandleSnapshot } = require("./lib/chart-snapshot");
@@ -44,47 +46,18 @@ async function notify(text) {
 }
 
 const LEVERAGE = 10;
-// Scale in / scale out. Replaced the old single-entry +-8%-of-margin (+-0.80% price) setup
-// after that was shown to have no edge once real fees were counted: the round-trip fee
-// measured off the Bitget ledger is 0.080% of notional, which ate 10% of every 0.80%
-// target. Breakeven win rate was 56.9% and the strategy delivered exactly 55.0%.
-//
-// This ladder instead buys in three slices as price dips, then sells half at a near target
-// and half at a far one. On the same 150-day data, with the same real fee applied:
-//   single entry  : 120 trades, 55.0% win, 100 -> 70.6, max drawdown 74%
-//   this ladder    :  79 trades, 67.1% win, 100 -> 178.2, max drawdown 36%
-//   (in-sample 137.6 / out-of-sample 126.1 — profitable in both halves, and 119.6 on
-//    Bitget's own candles over the 31 days they publish)
-// Re-run scratchpad/scale_stress.js before changing any of these numbers.
+// Panic-climax trade. Backtest (2y Bitget 15m, 61 trades, fees in): 1h hold + 3% stop came
+// out positive in both halves; a take-profit, tighter stops and 2h+ holds did not hold up
+// across both halves and both venues. Re-run the scratchpad climax-*.js scripts before
+// changing these.
+const CLIMAX_STOP_PCT = 0.03;
+const CLIMAX_HOLD_CANDLES = 4; // exit at the close of the 4th candle after the signal
+const CANDLE_MS = 15 * 60_000;
+// Old double-bottom ladder — only still used to finish (and adopt) positions it opened.
 const TRANCHES = 3;
-const TRANCHE_STEP_PCT = 0.004; // each further slice rests 0.4% below the first entry
-const TP1_PCT = 0.006; // half the filled size exits here
-const TP2_PCT = 0.016; // the rest exits here
-const STOP_PCT = 0.020; // measured from the FIRST entry and never moved, so the level is
-                        // known up front and every tranche can carry the same stop
-const ROUND_TRIP_FEE = 0.0008; // measured off the Bitget ledger, see above
-const MAX_RISK_OVERSHOOT = 1.5; // see the minimum-size check in maybeEnter()
-// A bot-side breakeven-close (arm once unrealized P&L crossed +4% of margin, then close
-// immediately if price fell back to entry) was tried and rolled back — a 150-day/15m
-// backtest across every arm threshold from +2% to +7% showed it *always* underperforms not
-// having it at all (best case +7%: 79.98 vs 84.27 final equity on the same signal set).
-// This strategy's winners often dip after entry and take hours to recover to the full +8%
-// TP; cutting them off at breakeven sacrifices more of those eventual wins than it saves
-// from full losses. Do not re-add without new backtest evidence it helps.
-const ALERT_MIN_SCORE = 85;
-// Structural stop-loss (SL just under the pattern's own reference level, e.g.
-// detectSignals()'s structureLevel) was tried and rolled back. It backtested well in
-// isolation, but after findRecentWickPivot() (signals.js) started letting a just-formed
-// capitulation wick act as that reference immediately, the reference level is often very
-// close to entry — the clamp's floor then made stops tight enough that a 150-day/15m
-// backtest showed a flat fixed ±STOP_LOSS_PCT beating every clamp width tried (222.01
-// final equity vs the best structural variant's 209.12, both halves of an in/out split).
-// structureLevel is still computed and carried on signals for potential future use —
-// only the stop-loss formula itself reverted.
-// The PDF strategy this bot follows is written by/for a 15m-primary trader (explicitly
-// warns against fast 5m entries for at least one pattern) — matches the dashboard's own
-// default timeframe. detectSignals()'s conditions are relative-to-recent-average, not
-// absolute, so the same logic carries over to a coarser candle size without retuning.
+const TP1_PCT = 0.006;
+const TP2_PCT = 0.016;
+const STOP_PCT = 0.020;
 const CANDLE_GRANULARITY = "15m";
 const CANDLE_LIMIT = 200;
 const POLL_INTERVAL_MS = 30_000;
@@ -266,7 +239,12 @@ async function reconcilePosition(config, state, contract, reports) {
     )
     .sort((a, b) => Number(a.uTime ?? a.cTime) - Number(b.uTime ?? b.cTime));
 
-  const expectedSize = opened.trancheSize != null ? Number(opened.trancheSize) * (opened.tranchesFilled ?? 1) : null;
+  const expectedSize =
+    opened.positionSize != null
+      ? Number(opened.positionSize)
+      : opened.trancheSize != null
+        ? Number(opened.trancheSize) * (opened.tranchesFilled ?? 1)
+        : null;
   const closingOrders = [];
   let closedSize = 0;
   for (const order of closingCandidates) {
@@ -334,7 +312,7 @@ async function reconcilePosition(config, state, contract, reports) {
     // directionally reliable even when we can't pin down the exact fill price.
     const balanceWentUp = state.currentBalance != null ? account.equity > state.currentBalance : true;
     exitReason = balanceWentUp ? "take-profit" : "stop-loss";
-    exitPrice = exitReason === "take-profit" ? opened.takeProfit : opened.stopLoss;
+    exitPrice = exitReason === "take-profit" ? (opened.takeProfit ?? opened.entryPrice) : opened.stopLoss;
     log("WARN: couldn't find the closing order in history — estimated exit price/reason from balance change instead.");
   }
   const exitTime = closingOrder ? Number(closingOrder.uTime ?? closingOrder.cTime) || Date.now() : Date.now();
@@ -357,6 +335,9 @@ async function reconcilePosition(config, state, contract, reports) {
     balanceAfter: account.equity,
     orderId: opened.orderId,
     exitOrderId: closingOrder?.orderId,
+    // Bot-side time exit (panic-climax) — exitReason above still says which side of entry
+    // it closed on, which is what the dashboard's win/loss count reads.
+    ...(opened.timeExitSent ? { exitKind: "time-exit" } : {}),
   });
 
   state.currentBalance = account.equity;
@@ -369,7 +350,11 @@ async function reconcilePosition(config, state, contract, reports) {
 
   await notify(
     [
-      exitReason === "take-profit" ? "실전 포지션 익절 종료" : "실전 포지션 손절 종료",
+      opened.timeExitSent
+        ? `실전 포지션 시간 청산 (${exitReason === "take-profit" ? "수익" : "손실"})`
+        : exitReason === "take-profit"
+          ? "실전 포지션 익절 종료"
+          : "실전 포지션 손절 종료",
       `패턴: ${signalTitle(opened.pattern)}`,
       `진입가: $${opened.entryPrice.toLocaleString()} → 청산가: $${exitPrice.toLocaleString()}`,
       `손익: ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`,
@@ -379,25 +364,34 @@ async function reconcilePosition(config, state, contract, reports) {
   );
 }
 
-// Margin is sized so a fully-filled ladder that stops out loses config.riskPct of equity
-// (BITGET_RISK_PCT, default 3%), fees included. This replaced committing ~95% of the
-// balance every trade, which made each full-ladder stop a -15% hit to the account. A
-// 2-year Bitget 15m backtest (Oct 2024 - Oct 2026, reproducing 19 of the 20 live trades)
-// found no entry-time condition that reliably separates winners from losers, so size can't
-// be raised in "good" regimes — it can only be kept small: final equity 0.002x at full size
-// vs 0.44x at 3% risk, max drawdown 100% vs 65%.
-//
-// The old rule is still the hard cap: BITGET_MARGIN_USDT unset/"full" (config.marginUsdt
-// === null) caps at 95% of available (the haircut avoids rejection from fees/rounding), a
-// fixed amount caps at that amount and never above the real available balance.
-// lossPerNotional is the fraction of the FULL ladder's notional lost at the stop.
-async function resolveMarginUsdt(config, lossPerNotional) {
+// The MAXIMUM margin a trade may commit; maybeEnter() takes 1/3, 2/3 or all of it by
+// sizeTier(). BITGET_MARGIN_USDT unset/"full" (config.marginUsdt === null) means "use
+// whatever the account currently has" — a 5% haircut avoids order rejection from
+// fees/rounding eating into the last few cents. A configured fixed amount is still capped
+// at the real available balance so a stale/optimistic env value can't over-commit.
+async function resolveMarginUsdt(config) {
   const account = await bitget.getAccount(config);
-  const capUsdt =
-    config.marginUsdt != null ? Math.min(config.marginUsdt, account.available) : Math.max(account.available * 0.95, 0);
-  const riskBudget = account.equity * config.riskPct;
-  const riskMargin = riskBudget / lossPerNotional / LEVERAGE;
-  return { marginUsdt: Math.min(capUsdt, riskMargin), capUsdt, riskBudget };
+  if (config.marginUsdt != null) return Math.min(config.marginUsdt, account.available);
+  return Math.max(account.available * 0.95, 0);
+}
+
+// Panic-climax positions have no take-profit: once exitAt passes, sell the whole position
+// at market. Retried every tick while the position is still there (a rejected/failed close
+// just tries again 30s later); reduce-only means a duplicate can never open a short.
+async function closeOnTimeExit(config, opened, position) {
+  if (Date.now() < opened.exitAt) return;
+  log(`Time exit due (${new Date(opened.exitAt).toISOString()}) — selling ${position.total} at market.`);
+  try {
+    await bitget.placeOrder(config, {
+      side: "sell",
+      size: String(position.total),
+      reduceOnly: true,
+      clientOid: `live-${opened.signalCandleTime}-exit-${Date.now()}`,
+    });
+    opened.timeExitSent = true;
+  } catch (error) {
+    log("WARN: time-exit market sell failed, retrying next tick:", error.message);
+  }
 }
 
 // Places one tranche's own pair of exits: half of that tranche at the near target, half
@@ -490,6 +484,9 @@ async function recordPartialExits(config, state, opened, position, reports) {
 
 async function manageOpenPosition(config, contract, state, position, reports) {
   const opened = state.openPosition;
+  if (opened?.exitAt != null) return closeOnTimeExit(config, opened, position);
+  // Everything below is the old double-bottom ladder's management, kept only to finish
+  // positions it opened.
   if (!opened || !opened.trancheSize) return; // pre-ladder position (e.g. "recovered") — nothing to manage
 
   // Keep the average entry in sync with reality; every P&L number downstream uses it.
@@ -540,90 +537,61 @@ async function manageOpenPosition(config, contract, state, position, reports) {
 }
 
 // Composes the "why did we enter" writeup for the trade-report journal, straight from
-// what detectSignals() already computed for this signal — no new reasoning invented here,
-// just the pattern's own title/detail/bullet reasons (signalReasons()) plus the reference
-// level double-bottom/key-candle stake their thesis on (structureLevel), if any.
-function buildReasonText(signal) {
-  const lines = [`패턴: ${signalTitle(signal.pattern)} (score ${Math.round(signal.score)})`, signal.detail];
+// what detectPanicClimax() already computed for this signal — no new reasoning invented
+// here, just the signal's own detail plus the pattern's bullet reasons (signalReasons()).
+function buildReasonText(signal, tier) {
+  const lines = [`패턴: ${signalTitle(signal.pattern)} (급락 ${(signal.drop * 100).toFixed(1)}%)`, signal.detail];
   const reasons = signalReasons(signal.pattern);
   if (reasons.length) lines.push(...reasons.map((reason) => `- ${reason}`));
-  if (signal.structureLevel != null) lines.push(`기준 레벨(구조적 참조가): $${signal.structureLevel.toLocaleString()}`);
+  lines.push(`비중: 최대 포지션의 ${tier}/3 (급락 3%대 1/3 · 4%대 2/3 · 5% 이상 전부)`);
   return lines.join("\n");
 }
 
-async function maybeEnter(config, contract, state, closedCandles, events, reports) {
+async function maybeEnter(config, contract, state, closedCandles, signals, reports) {
   if (state.openPosition) return;
 
-  const latest = events.at(-1);
   const latestCandle = closedCandles[closedCandles.length - 1];
+  const latest = signals.at(-1);
   if (!latest || !latestCandle || latest.index !== closedCandles.length - 1) return; // no signal on the freshest closed candle
-  if (latest.direction !== "LONG" || latest.score < ALERT_MIN_SCORE) return;
-  // key-candle disabled: a 150-day/15m backtest showed it net-losing at every score
-  // threshold tried (78-94), even with the structural stop-loss above — double-bottom
-  // alone was roughly breakeven over the same window. Still detected/shown on the
-  // dashboard's signal timeline for visibility, just never traded live. Revisit if the
-  // pattern gets reworked (e.g. an RSI or trend filter, like double-bottom already has).
-  if (latest.pattern === "key-candle") return;
 
   const watermark = resumeWatermark(state);
   if (watermark != null && latestCandle.time <= watermark) return; // already acted on this candle (or an earlier one)
 
-  // Each tranche stops out STOP_PCT minus its own offset below where it filled, plus the
-  // round-trip fee on everything.
-  let lossPerNotional = ROUND_TRIP_FEE;
-  for (let t = 0; t < TRANCHES; t += 1) lossPerNotional += (STOP_PCT - TRANCHE_STEP_PCT * t) / TRANCHES;
-  const { marginUsdt, capUsdt, riskBudget } = await resolveMarginUsdt(config, lossPerNotional);
-  if (marginUsdt <= 0) {
+  const capUsdt = await resolveMarginUsdt(config);
+  if (capUsdt <= 0) {
     log("WARN: no available balance to open a position with — skipping this signal.");
     return;
   }
+  const tier = sizeTier(latest.drop);
+  const marginUsdt = (capUsdt * tier) / 3;
 
   const price = latestCandle.close;
-  // Every level is measured off the FIRST entry and never recalculated, so the whole
-  // ladder can be placed up front and left alone — the bot being briefly offline can't
-  // strand a position without a stop.
-  const stopLoss = price * (1 - STOP_PCT);
-  const takeProfit1 = price * (1 + TP1_PCT);
-  const takeProfit2 = price * (1 + TP2_PCT);
-  const trancheSize = bitget.roundSize((marginUsdt * LEVERAGE) / price / TRANCHES, contract);
+  const stopLoss = price * (1 - CLIMAX_STOP_PCT);
+  // Close of the CLIMAX_HOLD_CANDLES-th candle after the signal one (whose own close is
+  // latestCandle.time + CANDLE_MS).
+  const exitAt = latestCandle.time + CANDLE_MS * (1 + CLIMAX_HOLD_CANDLES);
+  const size = bitget.roundSize((marginUsdt * LEVERAGE) / price, contract);
 
-  // roundSize() always rounds UP to the contract's minimum, even when the resolved
-  // margin implies a much smaller size — on a small/depleted balance this would silently
-  // ask for more margin than we actually have. Bitget would reject it anyway, but doing
-  // that on every 30s tick until the candle rolls over just spams rejected live orders.
-  // Skip cleanly instead and wait for the next signal. Checked against the FULL ladder,
-  // since all three tranches can fill.
-  const impliedMargin = (Number(trancheSize) * TRANCHES * price) / LEVERAGE;
+  // roundSize() always rounds UP to the contract's minimum, even when the resolved margin
+  // implies a much smaller size — on a depleted balance this would ask for more margin than
+  // we have, and Bitget would reject it on every 30s tick until the candle rolls over.
+  const impliedMargin = (Number(size) * price) / LEVERAGE;
   if (impliedMargin > capUsdt * 1.05) {
     log(
-      `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin for the full ladder, ` +
+      `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin, ` +
         `only $${capUsdt.toFixed(2)} available.`,
-    );
-    return;
-  }
-  // The same round-up can also push the ladder well past the risk budget on a small
-  // account. A little over is accepted (the step is coarse at this balance); much more is not.
-  const ladderRisk = Number(trancheSize) * TRANCHES * price * lossPerNotional;
-  if (ladderRisk > riskBudget * MAX_RISK_OVERSHOOT) {
-    log(
-      `WARN: skipping entry — exchange minimum order size would risk ~$${ladderRisk.toFixed(2)} on a full stop, ` +
-        `over ${MAX_RISK_OVERSHOOT}x the $${riskBudget.toFixed(2)} budget (${(config.riskPct * 100).toFixed(1)}% of equity).`,
     );
     return;
   }
 
   log(
-    `Signal: ${latest.pattern} score=${latest.score} price=${price} margin=${marginUsdt.toFixed(2)} ` +
-      `risk=${ladderRisk.toFixed(2)}/${riskBudget.toFixed(2)} ` +
-      `tranche=${trancheSize} x${TRANCHES} — placing ladder...`,
+    `Signal: panic-climax drop=${(latest.drop * 100).toFixed(2)}% vol=${latest.volumeRatio.toFixed(1)}x price=${price} ` +
+      `tier=${tier}/3 margin=${marginUsdt.toFixed(2)} size=${size} — buying at market...`,
   );
 
-  // Tranche 1 goes in at market, carrying the stop. Bitget treats presetStopLossPrice as a
-  // position-level trigger in one-way mode, and every later tranche repeats the same price,
-  // so the stop covers whatever size ends up filled.
   const order = await bitget.placeOrder(config, {
     side: "buy",
-    size: trancheSize,
+    size,
     presetStopLossPrice: stopLoss.toFixed(1),
     clientOid: `live-${latestCandle.time}`,
   });
@@ -634,48 +602,25 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
   const entryPrice = (detail && Number(detail.priceAvg || detail.price)) || price;
   const entryTime = (detail && Number(detail.cTime)) || Date.now();
 
-  // Remaining tranches rest on the book as limit buys so they fill at the exact ladder
-  // price even between 30s polls, matching what the backtest assumed.
-  for (let t = 1; t < TRANCHES; t += 1) {
-    const level = price * (1 - TRANCHE_STEP_PCT * t);
-    await bitget
-      .placeOrder(config, {
-        side: "buy",
-        size: trancheSize,
-        price: level.toFixed(1),
-        presetStopLossPrice: stopLoss.toFixed(1),
-        clientOid: `live-${latestCandle.time}-t${t + 1}`,
-      })
-      .catch((error) => log(`WARN: tranche ${t + 1} limit order failed (ladder continues):`, error.message));
-  }
-
-  // Tranche 1's own exits. Each tranche gets its own pair (half near, half far) as it
-  // fills, so the totals always come out to half the filled size at each target without
-  // ever having to cancel and re-size anything.
-  await placeTrancheExits(config, contract, trancheSize, takeProfit1, takeProfit2, latestCandle.time, 1);
-
   state.openPosition = {
     pattern: latest.pattern,
     score: latest.score,
     leverage: LEVERAGE,
     size: marginUsdt,
     entryTime,
-    entryPrice, // average entry — refreshed from the exchange as tranches fill
-    firstEntryPrice: entryPrice,
-    trancheSize,
-    tranchesFilled: 1,
+    entryPrice,
+    positionSize: size,
+    sizeTier: tier,
+    drop: latest.drop,
     signalCandleTime: latestCandle.time,
-    takeProfit: takeProfit1, // kept under the old names so the dashboard keeps rendering
-    takeProfit2,
+    takeProfit: null, // no target — exitAt closes it
+    exitAt,
     stopLoss,
     orderId: order.orderId,
   };
 
-  log(
-    `Entered LONG tranche 1/${TRANCHES} @ ${entryPrice} (orderId ${order.orderId}) — ` +
-      `adds at ${(price * (1 - TRANCHE_STEP_PCT)).toFixed(1)} / ${(price * (1 - TRANCHE_STEP_PCT * 2)).toFixed(1)}, ` +
-      `TP ${takeProfit1.toFixed(1)} & ${takeProfit2.toFixed(1)}, SL ${stopLoss.toFixed(1)}`,
-  );
+  const exitClock = new Date(exitAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  log(`Entered LONG ${size} @ ${entryPrice} (orderId ${order.orderId}) — SL ${stopLoss.toFixed(1)}, time exit ${new Date(exitAt).toISOString()}`);
 
   const snapshotCandles = closedCandles.slice(-CHART_SNAPSHOT_CANDLES);
   const chartSvg = renderCandleSnapshot({
@@ -683,12 +628,8 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
     title: `BTCUSDT 15m · ${new Date(entryTime).toLocaleString("ko-KR")}`,
     markers: [{ index: snapshotCandles.length - 1, color: "#f472b6", label: "B" }],
     lines: [
-      { price: takeProfit2, color: "#4ade80", label: `TP2 ${takeProfit2.toFixed(1)}` },
-      { price: takeProfit1, color: "#86efac", label: `TP1 ${takeProfit1.toFixed(1)}` },
-      { price: price * (1 - TRANCHE_STEP_PCT), color: "#94a3b8", label: "추가2" },
-      { price: price * (1 - TRANCHE_STEP_PCT * 2), color: "#94a3b8", label: "추가3" },
+      { price: latest.refHigh, color: "#94a3b8", label: `5h 고점 ${latest.refHigh.toFixed(1)}` },
       { price: stopLoss, color: "#f43f5e", label: `SL ${stopLoss.toFixed(1)}` },
-      ...(latest.structureLevel != null ? [{ price: latest.structureLevel, color: "#22d3ee", label: "기준가" }] : []),
     ],
   });
 
@@ -698,24 +639,22 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
     pattern: latest.pattern,
     score: latest.score,
     reasonSummary: signalTitle(latest.pattern),
-    reasonDetail: buildReasonText(latest),
+    reasonDetail: buildReasonText(latest, tier),
     entryTime,
     entryPrice,
-    takeProfit: takeProfit1,
+    takeProfit: null,
     stopLoss,
     chartSvg,
   });
 
   await notify(
     [
-      "실전 포지션 진입 (분할 1/3)",
-      `패턴: ${signalTitle(latest.pattern)} (${latest.score.toFixed(0)}점)`,
+      "실전 포지션 진입 (패닉 클라이맥스)",
+      `급락: ${(latest.drop * 100).toFixed(1)}% · 거래량 평균의 ${latest.volumeRatio.toFixed(1)}배`,
       `진입가: $${entryPrice.toLocaleString()}`,
-      `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x (3분할)`,
-      `전량 손절 시 위험: $${ladderRisk.toFixed(2)} (자산의 ${(config.riskPct * 100).toFixed(1)}% 기준)`,
-      `추가매수: $${(price * (1 - TRANCHE_STEP_PCT)).toFixed(1)} / $${(price * (1 - TRANCHE_STEP_PCT * 2)).toFixed(1)}`,
-      `익절: $${takeProfit1.toFixed(1)}(절반) · $${takeProfit2.toFixed(1)}(절반)`,
-      `손절: $${stopLoss.toFixed(1)}`,
+      `비중: ${tier}/3 · 증거금 $${marginUsdt.toFixed(2)} · ${LEVERAGE}x`,
+      `청산: ${exitClock} 시장가 (1시간 보유)`,
+      `손절: $${stopLoss.toFixed(1)} (-${(CLIMAX_STOP_PCT * 100).toFixed(0)}%)`,
       `시간: ${new Date(entryTime).toLocaleString("ko-KR")}`,
     ].join("\n"),
   );
@@ -735,7 +674,7 @@ async function tick(config, state, reports) {
 
   const candles = await bitget.getCandles(config, { granularity: CANDLE_GRANULARITY, limit: CANDLE_LIMIT });
   const closedCandles = candles.slice(0, -1); // last candle is still forming
-  const events = detectSignals(closedCandles);
+  const signals = detectPanicClimax(closedCandles);
 
   // Fetched before reconciling now — managing a live ladder needs the contract's size
   // rounding to place each tranche's exits.
@@ -746,7 +685,7 @@ async function tick(config, state, reports) {
   await reconcilePosition(config, state, contractConfigCache, reports);
 
   if (!state.openPosition) {
-    await maybeEnter(config, contractConfigCache, state, closedCandles, events, reports);
+    await maybeEnter(config, contractConfigCache, state, closedCandles, signals, reports);
   }
 
   persistFiles([
@@ -782,8 +721,9 @@ async function reconcileOnStartup(config, state, contract, reports) {
 async function main() {
   const config = bitget.loadConfig();
   const marginDesc =
-    `${(config.riskPct * 100).toFixed(1)}% of equity at risk per full ladder, capped at ` +
-    (config.marginUsdt != null ? `${config.marginUsdt} USDT` : "~95% of available balance");
+    "1/3, 2/3 or all of " +
+    (config.marginUsdt != null ? `${config.marginUsdt} USDT` : "~95% of available balance") +
+    " by panic depth (panic-climax strategy)";
   log(
     `Starting live-trade loop for ${config.symbol} (${config.demo ? "DEMO" : "LIVE — real funds"}). ` +
       `Margin per trade: ${marginDesc} @ ${LEVERAGE}x.`,

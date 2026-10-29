@@ -10,7 +10,7 @@ type Direction = "LONG" | "WAIT"
 // (data/live-trades.json can contain them from before this pattern set changed, or from
 // scripts/live-trade.js's startup-reconciliation recovery path) — detectSignals() below
 // no longer generates either.
-type Pattern = "key-candle" | "double-bottom" | "avoid" | "panic" | "recovered"
+type Pattern = "key-candle" | "double-bottom" | "avoid" | "panic" | "recovered" | "panic-climax"
 
 interface Candle {
   time: number
@@ -49,9 +49,11 @@ interface PaperOpenPosition {
   size: number
   entryTime: number
   entryPrice: number
-  takeProfit: number
+  // null for the panic-climax strategy, which has no target and closes at exitAt instead
+  takeProfit: number | null
   stopLoss: number
   orderId?: string
+  exitAt?: number
   // Live ladder only (scripts/live-trade.js) — far target and exit legs filled so far.
   takeProfit2?: number
   lastSize?: number
@@ -491,6 +493,7 @@ const PATTERN_LABELS: Record<Pattern, string> = {
   avoid: "빠른 진입 금지",
   panic: "패닉셀 반등 후보 (구)",
   recovered: "재시작 중 복구된 포지션",
+  "panic-climax": "패닉 클라이맥스 (1장)",
 }
 
 function patternLabel(pattern: Pattern) {
@@ -516,6 +519,11 @@ function signalReasons(signal?: EntrySignal) {
     avoid: ["첫 장대봉이 너무 강합니다.", "저점까지 매도 거래량이 계속 큽니다.", "PDF 기준 빠른 롱을 피하는 자리입니다."],
     panic: ["최근 저점을 새로 만들었습니다.", "평균보다 거래량이 크게 늘었습니다.", "긴 봉 또는 아래꼬리로 매수 반응이 보입니다."],
     recovered: ["봇이 재시작하는 동안 실제 거래소에 열려있던 포지션을 그대로 인식했습니다."],
+    "panic-climax": [
+      "직전 5시간 고점 대비 3% 이상 급락(패닉셀 가속)했습니다.",
+      "이번 봉의 거래량이 앞선 20봉보다 월등히 많습니다.",
+      "PDF 1장: 마지막 장대에서 반등이 가장 빠르고 강하게 옵니다.",
+    ],
   }
 
   return reasons[signal.pattern]
@@ -546,6 +554,7 @@ function shortReason(signal: EntrySignal) {
     avoid: "첫 장대봉 과열",
     panic: "거래량 폭발 + 마지막 장대봉",
     recovered: "재시작 중 포지션 복구",
+    "panic-climax": "급락 + 거래량 폭발 장대",
   }
 
   return reasons[signal.pattern]
@@ -927,10 +936,18 @@ export default function BitcoinEntryChart() {
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
-                  {state.openPosition.takeProfit2 != null ? "TP 익절가 (1차/2차)" : "TP 익절가"}
+                  {state.openPosition.takeProfit == null
+                    ? "시간 청산"
+                    : state.openPosition.takeProfit2 != null
+                      ? "TP 익절가 (1차/2차)"
+                      : "TP 익절가"}
                 </p>
                 <p className="mt-0.5 text-lg font-bold tabular-nums text-emerald-300">
-                  {formatPrice(state.openPosition.takeProfit)}
+                  {state.openPosition.takeProfit == null
+                    ? state.openPosition.exitAt != null
+                      ? new Date(state.openPosition.exitAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })
+                      : "-"
+                    : formatPrice(state.openPosition.takeProfit)}
                   {state.openPosition.takeProfit2 != null && (
                     <span className="block text-sm text-emerald-300/80">{formatPrice(state.openPosition.takeProfit2)}</span>
                   )}
@@ -1040,7 +1057,7 @@ export default function BitcoinEntryChart() {
                 )}
               </g>
             )}
-            {openPosition.takeProfit >= chart.min && openPosition.takeProfit <= chart.max && (
+            {openPosition.takeProfit != null && openPosition.takeProfit >= chart.min && openPosition.takeProfit <= chart.max && (
               <g>
                 <line
                   x1={chart.padding.left}
