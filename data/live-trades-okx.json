@@ -1,0 +1,9 @@
+{
+  "mode": "live",
+  "strategy": "panic-climax",
+  "startingBalance": 25.371226925837842,
+  "currentBalance": 25.371226925837842,
+  "startedAt": 1793288673429,
+  "openPosition": null,
+  "trades": []
+}
