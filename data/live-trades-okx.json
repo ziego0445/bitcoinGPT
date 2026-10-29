@@ -4,6 +4,22 @@
   "startingBalance": 25.371226925837842,
   "currentBalance": 25.371226925837842,
   "startedAt": 1793288673429,
-  "openPosition": null,
+  "openPosition": {
+    "pattern": "panic-climax",
+    "direction": "LONG",
+    "score": 3.8,
+    "leverage": 10,
+    "size": 8.03422185984865,
+    "entryTime": 1793306713535,
+    "entryPrice": 78853.9,
+    "positionSize": "0.10",
+    "sizeTier": 1,
+    "drop": 0.03764230896912649,
+    "signalCandleTime": 1793305800000,
+    "takeProfit": null,
+    "exitAt": 1793310300000,
+    "stopLoss": 76484.69399999999,
+    "orderId": "4053520123842711552"
+  },
   "trades": []
 }
