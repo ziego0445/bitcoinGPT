@@ -2,25 +2,25 @@
   "mode": "live",
   "strategy": "panic-climax",
   "startingBalance": 25.371226925837842,
-  "currentBalance": 25.371226925837842,
+  "currentBalance": 25.59572127583784,
   "startedAt": 1793288673429,
-  "openPosition": {
-    "pattern": "panic-climax",
-    "direction": "LONG",
-    "score": 3.8,
-    "leverage": 10,
-    "size": 8.03422185984865,
-    "entryTime": 1793306713535,
-    "entryPrice": 78853.9,
-    "positionSize": "0.10",
-    "sizeTier": 1,
-    "drop": 0.03764230896912649,
-    "signalCandleTime": 1793305800000,
-    "takeProfit": null,
-    "exitAt": 1793310300000,
-    "stopLoss": 76484.69399999999,
-    "orderId": "4053520123842711552",
-    "timeExitSent": true
-  },
-  "trades": []
+  "openPosition": null,
+  "trades": [
+    {
+      "pattern": "panic-climax",
+      "direction": "LONG",
+      "leverage": 10,
+      "entryTime": 1793306713535,
+      "entryPrice": 78853.9,
+      "exitTime": 1793310314177,
+      "exitPrice": 79157.4,
+      "exitReason": "take-profit",
+      "pnlPct": 3.8488901626932845,
+      "balanceBefore": 25.371226925837842,
+      "balanceAfter": 25.59572127583784,
+      "orderId": "4053520123842711552",
+      "exitOrderId": "4053640941306302464",
+      "exitKind": "time-exit"
+    }
+  ]
 }
