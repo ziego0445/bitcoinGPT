@@ -55,7 +55,13 @@ function loadConfig() {
     throw new Error('OKX_MARGIN_USDT must be a positive number, or unset/"full" to use the whole balance');
   }
 
-  return { apiKey, apiSecret, apiPassphrase, marginUsdt, symbol };
+  // Same as BITGET_RISK_PCT: fraction of equity a fully-filled ladder may lose at its stop.
+  const riskPct = process.env.OKX_RISK_PCT ? Number(process.env.OKX_RISK_PCT) : 0.03;
+  if (!Number.isFinite(riskPct) || riskPct <= 0 || riskPct > 0.2) {
+    throw new Error("OKX_RISK_PCT must be a fraction between 0 and 0.2 (e.g. 0.03 for 3%)");
+  }
+
+  return { apiKey, apiSecret, apiPassphrase, marginUsdt, riskPct, symbol };
 }
 
 function sign(secret, timestamp, method, requestPath, bodyString) {

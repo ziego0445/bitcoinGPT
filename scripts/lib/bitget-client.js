@@ -51,7 +51,14 @@ function loadConfig() {
     throw new Error("BITGET_MARGIN_USDT must be a positive number, or unset/\"full\" to use the whole balance");
   }
 
-  return { apiKey, apiSecret, apiPassphrase, demo, marginUsdt, symbol, productType: PRODUCT_TYPE, marginCoin: MARGIN_COIN };
+  // Fraction of account equity a fully-filled ladder may lose if it stops out — see
+  // resolveMarginUsdt() in live-trade.js. BITGET_MARGIN_USDT above is still the hard cap.
+  const riskPct = process.env.BITGET_RISK_PCT ? Number(process.env.BITGET_RISK_PCT) : 0.03;
+  if (!Number.isFinite(riskPct) || riskPct <= 0 || riskPct > 0.2) {
+    throw new Error("BITGET_RISK_PCT must be a fraction between 0 and 0.2 (e.g. 0.03 for 3%)");
+  }
+
+  return { apiKey, apiSecret, apiPassphrase, demo, marginUsdt, riskPct, symbol, productType: PRODUCT_TYPE, marginCoin: MARGIN_COIN };
 }
 
 function sign(secret, timestamp, method, requestPath, queryString, bodyString) {

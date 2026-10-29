@@ -16,7 +16,8 @@
 //   - the STOP is a single level 1.6R from the FIRST entry, attached to every tranche as an
 //     exchange-side trigger (slTriggerPx) so OKX closes the position even if this process
 //     is offline. That is the one guarantee this script does not manage itself.
-//   - position size is a FIXED margin amount (OKX_MARGIN_USDT), same as live-trade.js.
+//   - position size is set so the whole ladder stopping out loses OKX_RISK_PCT (default 3%)
+//     of equity, capped by OKX_MARGIN_USDT — see resolveMarginUsdt().
 //
 // The exchange is always the source of truth: each tick reads the real position, notices
 // tranche fills, and reconciles the local JSON. When flat, every leftover resting order is
@@ -64,6 +65,8 @@ const TRANCHE_STEP_R = 0.4; // each further slice rests 0.4R further against the
 const TP1_R = 1.0; // half the filled size exits here
 const TP2_R = 3.0; // the rest exits here
 const STOP_R = 1.6; // measured from the FIRST entry and never moved
+const ROUND_TRIP_FEE = 0.0008; // same measured fee as live-trade.js
+const MAX_RISK_OVERSHOOT = 1.5; // see the minimum-size check in maybeEnter()
 const DIRECTION_LOOKBACK = 20; // how many prior signals the direction vote reads
 const DIRECTION_MIN_EDGE = 1; // one side must lead by more than this to be tradeable
 const CANDLE_GRANULARITY = "15m";
@@ -434,11 +437,21 @@ async function reconcilePosition(config, state, contract, reports) {
   );
 }
 
-// See live-trade.js's identical helper for the "full"/fixed rationale.
-async function resolveMarginUsdt(config) {
+// Same shape as live-trade.js's helper: margin sized so a fully-filled ladder stopping out
+// loses config.riskPct of equity (OKX_RISK_PCT, default 3%), with the old "full"/fixed rule
+// as the hard cap. It matters more here than on Bitget: the stop distance is the signal's
+// own risk, so at a fixed ~95% margin a full stop cost anywhere from -0.6% to -27% of the
+// account depending on how wide the sweep was. 2-year OKX 15m backtest (reproducing 15 of
+// the 16 live trades): final equity 0.006x at full size vs 0.30x at 3% risk, max drawdown
+// 100% vs 77% — no entry-time filter tried (trend, ATR, lean strength, recent results)
+// held up in both halves, so the risk budget is flat rather than regime-scaled.
+async function resolveMarginUsdt(config, lossPerNotional) {
   const account = await okx.getAccount(config);
-  if (config.marginUsdt != null) return Math.min(config.marginUsdt, account.available);
-  return Math.max(account.available * 0.95, 0);
+  const capUsdt =
+    config.marginUsdt != null ? Math.min(config.marginUsdt, account.available) : Math.max(account.available * 0.95, 0);
+  const riskBudget = account.equity * config.riskPct;
+  const riskMargin = riskBudget / lossPerNotional / LEVERAGE;
+  return { marginUsdt: Math.min(capUsdt, riskMargin), capUsdt, riskBudget };
 }
 
 // Composes the "why did we enter" writeup straight from the signal's own three-step
@@ -533,7 +546,11 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
   const takeProfit1 = price + sgn * risk * TP1_R;
   const takeProfit2 = price + sgn * risk * TP2_R;
 
-  const marginUsdt = await resolveMarginUsdt(config);
+  // Each tranche stops out (STOP_R minus its own offset) R away from where it filled, plus
+  // the round-trip fee on everything — as a fraction of the full ladder's notional.
+  let lossPerNotional = ROUND_TRIP_FEE;
+  for (let t = 0; t < TRANCHES; t += 1) lossPerNotional += ((risk / price) * (STOP_R - TRANCHE_STEP_R * t)) / TRANCHES;
+  const { marginUsdt, capUsdt, riskBudget } = await resolveMarginUsdt(config, lossPerNotional);
   if (marginUsdt <= 0) {
     log("WARN: no available balance to open a position with — skipping this signal.");
     return;
@@ -541,11 +558,22 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
 
   const trancheSize = okx.roundSize((marginUsdt * LEVERAGE) / price / TRANCHES, contract);
   // Checked against the FULL ladder, since all three tranches can fill.
-  const impliedMargin = (Number(trancheSize) * TRANCHES * contract.ctVal * price) / LEVERAGE;
-  if (impliedMargin > marginUsdt * 1.05) {
+  const ladderNotional = Number(trancheSize) * TRANCHES * contract.ctVal * price;
+  const impliedMargin = ladderNotional / LEVERAGE;
+  if (impliedMargin > capUsdt * 1.05) {
     log(
       `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin for the full ladder, ` +
-        `only $${marginUsdt.toFixed(2)} available.`,
+        `only $${capUsdt.toFixed(2)} available.`,
+    );
+    return;
+  }
+  // roundSize() rounds up to the contract minimum, which on a wide-risk signal can put the
+  // ladder well over budget — see live-trade.js's identical check.
+  const ladderRisk = ladderNotional * lossPerNotional;
+  if (ladderRisk > riskBudget * MAX_RISK_OVERSHOOT) {
+    log(
+      `WARN: skipping entry — exchange minimum order size would risk ~$${ladderRisk.toFixed(2)} on a full stop, ` +
+        `over ${MAX_RISK_OVERSHOOT}x the $${riskBudget.toFixed(2)} budget (${(config.riskPct * 100).toFixed(1)}% of equity).`,
     );
     return;
   }
@@ -553,7 +581,8 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
   log(
     `Signal: ICT ${latest.mssType} ${latest.direction} (lean ${regime}) price=${price} risk=${risk.toFixed(1)} ` +
       `stop=${stopLoss.toFixed(1)} targets=${takeProfit1.toFixed(1)}/${takeProfit2.toFixed(1)} ` +
-      `margin=${marginUsdt.toFixed(2)} tranche=${trancheSize} x${TRANCHES} — placing ladder...`,
+      `margin=${marginUsdt.toFixed(2)} ladderRisk=${ladderRisk.toFixed(2)}/${riskBudget.toFixed(2)} ` +
+      `tranche=${trancheSize} x${TRANCHES} — placing ladder...`,
   );
 
   // Tranche 1 at market, carrying the stop as an exchange-side trigger so OKX closes the
@@ -664,6 +693,7 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
       `구조: ${latest.mssType} 유동성 스윕 → FVG 진입 · 최근 신호 우세 ${regime}`,
       `진입가: $${entryPrice.toLocaleString()}`,
       `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x (3분할)`,
+      `전량 손절 시 위험: $${ladderRisk.toFixed(2)} (자산의 ${(config.riskPct * 100).toFixed(1)}% 기준)`,
       `추가진입: $${(price - sgn * risk * TRANCHE_STEP_R).toFixed(1)} / $${(price - sgn * risk * TRANCHE_STEP_R * 2).toFixed(1)}`,
       `익절: $${takeProfit1.toFixed(1)}(절반) · $${takeProfit2.toFixed(1)}(절반)`,
       `손절: $${stopLoss.toFixed(1)}`,
@@ -748,7 +778,9 @@ async function reconcileOnStartup(config, state, contract, reports) {
 
 async function main() {
   const config = okx.loadConfig();
-  const marginDesc = config.marginUsdt != null ? `${config.marginUsdt} USDT (fixed)` : "~95% of available balance each trade";
+  const marginDesc =
+    `${(config.riskPct * 100).toFixed(1)}% of equity at risk per full ladder, capped at ` +
+    (config.marginUsdt != null ? `${config.marginUsdt} USDT` : "~95% of available balance");
   log(`Starting ICT live-trade loop for ${config.symbol} on OKX (LIVE — real funds). Margin per trade: ${marginDesc} @ ${LEVERAGE}x.`);
 
   const setup = await okx.ensureAccountSetup(config, { leverage: LEVERAGE });

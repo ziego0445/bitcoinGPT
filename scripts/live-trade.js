@@ -10,6 +10,8 @@
 //     presetStopLossPrice on every tranche buy, so Bitget's own engine closes the position
 //     at that price even if this process is offline. That is the one guarantee this script
 //     does not manage itself.
+//   - SIZE is set so the whole ladder stopping out loses BITGET_RISK_PCT (default 3%) of
+//     equity — see resolveMarginUsdt().
 //   - candles come from Bitget itself, not Binance, so the signal source matches the
 //     venue we actually trade on.
 //   - the exchange is always the source of truth: each tick reads the real position,
@@ -60,6 +62,8 @@ const TP1_PCT = 0.006; // half the filled size exits here
 const TP2_PCT = 0.016; // the rest exits here
 const STOP_PCT = 0.020; // measured from the FIRST entry and never moved, so the level is
                         // known up front and every tranche can carry the same stop
+const ROUND_TRIP_FEE = 0.0008; // measured off the Bitget ledger, see above
+const MAX_RISK_OVERSHOOT = 1.5; // see the minimum-size check in maybeEnter()
 // A bot-side breakeven-close (arm once unrealized P&L crossed +4% of margin, then close
 // immediately if price fell back to entry) was tried and rolled back — a 150-day/15m
 // backtest across every arm threshold from +2% to +7% showed it *always* underperforms not
@@ -375,15 +379,25 @@ async function reconcilePosition(config, state, contract, reports) {
   );
 }
 
-// BITGET_MARGIN_USDT unset/"full" (config.marginUsdt === null) means "use whatever the
-// account currently has" — appropriate for a small account where a separate fixed
-// allocation doesn't make sense. A 5% haircut avoids order rejection from fees/rounding
-// eating into the last few cents of available margin. A configured fixed amount is still
-// capped at the real available balance so a stale/optimistic env value can't over-commit.
-async function resolveMarginUsdt(config) {
+// Margin is sized so a fully-filled ladder that stops out loses config.riskPct of equity
+// (BITGET_RISK_PCT, default 3%), fees included. This replaced committing ~95% of the
+// balance every trade, which made each full-ladder stop a -15% hit to the account. A
+// 2-year Bitget 15m backtest (Oct 2024 - Oct 2026, reproducing 19 of the 20 live trades)
+// found no entry-time condition that reliably separates winners from losers, so size can't
+// be raised in "good" regimes — it can only be kept small: final equity 0.002x at full size
+// vs 0.44x at 3% risk, max drawdown 100% vs 65%.
+//
+// The old rule is still the hard cap: BITGET_MARGIN_USDT unset/"full" (config.marginUsdt
+// === null) caps at 95% of available (the haircut avoids rejection from fees/rounding), a
+// fixed amount caps at that amount and never above the real available balance.
+// lossPerNotional is the fraction of the FULL ladder's notional lost at the stop.
+async function resolveMarginUsdt(config, lossPerNotional) {
   const account = await bitget.getAccount(config);
-  if (config.marginUsdt != null) return Math.min(config.marginUsdt, account.available);
-  return Math.max(account.available * 0.95, 0);
+  const capUsdt =
+    config.marginUsdt != null ? Math.min(config.marginUsdt, account.available) : Math.max(account.available * 0.95, 0);
+  const riskBudget = account.equity * config.riskPct;
+  const riskMargin = riskBudget / lossPerNotional / LEVERAGE;
+  return { marginUsdt: Math.min(capUsdt, riskMargin), capUsdt, riskBudget };
 }
 
 // Places one tranche's own pair of exits: half of that tranche at the near target, half
@@ -554,7 +568,11 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
   const watermark = resumeWatermark(state);
   if (watermark != null && latestCandle.time <= watermark) return; // already acted on this candle (or an earlier one)
 
-  const marginUsdt = await resolveMarginUsdt(config);
+  // Each tranche stops out STOP_PCT minus its own offset below where it filled, plus the
+  // round-trip fee on everything.
+  let lossPerNotional = ROUND_TRIP_FEE;
+  for (let t = 0; t < TRANCHES; t += 1) lossPerNotional += (STOP_PCT - TRANCHE_STEP_PCT * t) / TRANCHES;
+  const { marginUsdt, capUsdt, riskBudget } = await resolveMarginUsdt(config, lossPerNotional);
   if (marginUsdt <= 0) {
     log("WARN: no available balance to open a position with — skipping this signal.");
     return;
@@ -576,16 +594,27 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
   // Skip cleanly instead and wait for the next signal. Checked against the FULL ladder,
   // since all three tranches can fill.
   const impliedMargin = (Number(trancheSize) * TRANCHES * price) / LEVERAGE;
-  if (impliedMargin > marginUsdt * 1.05) {
+  if (impliedMargin > capUsdt * 1.05) {
     log(
       `WARN: skipping entry — exchange minimum order size needs ~$${impliedMargin.toFixed(2)} margin for the full ladder, ` +
-        `only $${marginUsdt.toFixed(2)} available.`,
+        `only $${capUsdt.toFixed(2)} available.`,
+    );
+    return;
+  }
+  // The same round-up can also push the ladder well past the risk budget on a small
+  // account. A little over is accepted (the step is coarse at this balance); much more is not.
+  const ladderRisk = Number(trancheSize) * TRANCHES * price * lossPerNotional;
+  if (ladderRisk > riskBudget * MAX_RISK_OVERSHOOT) {
+    log(
+      `WARN: skipping entry — exchange minimum order size would risk ~$${ladderRisk.toFixed(2)} on a full stop, ` +
+        `over ${MAX_RISK_OVERSHOOT}x the $${riskBudget.toFixed(2)} budget (${(config.riskPct * 100).toFixed(1)}% of equity).`,
     );
     return;
   }
 
   log(
     `Signal: ${latest.pattern} score=${latest.score} price=${price} margin=${marginUsdt.toFixed(2)} ` +
+      `risk=${ladderRisk.toFixed(2)}/${riskBudget.toFixed(2)} ` +
       `tranche=${trancheSize} x${TRANCHES} — placing ladder...`,
   );
 
@@ -683,6 +712,7 @@ async function maybeEnter(config, contract, state, closedCandles, events, report
       `패턴: ${signalTitle(latest.pattern)} (${latest.score.toFixed(0)}점)`,
       `진입가: $${entryPrice.toLocaleString()}`,
       `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x (3분할)`,
+      `전량 손절 시 위험: $${ladderRisk.toFixed(2)} (자산의 ${(config.riskPct * 100).toFixed(1)}% 기준)`,
       `추가매수: $${(price * (1 - TRANCHE_STEP_PCT)).toFixed(1)} / $${(price * (1 - TRANCHE_STEP_PCT * 2)).toFixed(1)}`,
       `익절: $${takeProfit1.toFixed(1)}(절반) · $${takeProfit2.toFixed(1)}(절반)`,
       `손절: $${stopLoss.toFixed(1)}`,
@@ -751,7 +781,9 @@ async function reconcileOnStartup(config, state, contract, reports) {
 
 async function main() {
   const config = bitget.loadConfig();
-  const marginDesc = config.marginUsdt != null ? `${config.marginUsdt} USDT (fixed)` : "~95% of available balance each trade";
+  const marginDesc =
+    `${(config.riskPct * 100).toFixed(1)}% of equity at risk per full ladder, capped at ` +
+    (config.marginUsdt != null ? `${config.marginUsdt} USDT` : "~95% of available balance");
   log(
     `Starting live-trade loop for ${config.symbol} (${config.demo ? "DEMO" : "LIVE — real funds"}). ` +
       `Margin per trade: ${marginDesc} @ ${LEVERAGE}x.`,
