@@ -8,12 +8,13 @@ import PartialExitsNote, { type PartialExit } from "./PartialExitsNote"
 // fires — why it entered (reasonDetail, straight from the signal that triggered it) plus
 // a chart snapshot captured at that instant (scripts/lib/chart-snapshot.js) — then the
 // SAME record gets filled in with the outcome once the position closes. Written by
-// scripts/live-trade.js (bot: "bitget") and scripts/live-trade-ict.js (bot: "ict") — see
-// scripts/lib/trade-reports.js for the shared shape/lifecycle. This panel just polls both
+// scripts/live-trade.js (bot: "bitget"), scripts/live-trade-okx.js (bot: "okx") and the retired
+// scripts/live-trade-ict.js (bot: "ict") — see
+// scripts/lib/trade-reports.js for the shared shape/lifecycle. This panel just polls all
 // bots' files and renders them merged into one feed, newest first.
 interface TradeReport {
   id: string
-  bot: "bitget" | "ict"
+  bot: "bitget" | "okx" | "ict"
   status: "open" | "closed"
   pattern: string
   // The ICT bot trades both ways now, so the journal has to say which — older records
@@ -41,6 +42,7 @@ interface TradeReport {
 }
 
 const BITGET_REPORTS_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/trade-reports-bitget.json"
+const OKX_REPORTS_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/trade-reports-okx.json"
 const ICT_REPORTS_URL = "https://cdn.jsdelivr.net/gh/ziego0445/bitcoinGPT@main/data/trade-reports-ict.json"
 
 function usePolledJson<T>(url: string, intervalMs: number): T | null {
@@ -79,9 +81,10 @@ function formatDateTime(time: number) {
   return new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(time))
 }
 
-const BOT_LABEL: Record<TradeReport["bot"], string> = { bitget: "Bitget · 더블바텀", ict: "OKX · ICT" }
+const BOT_LABEL: Record<TradeReport["bot"], string> = { bitget: "Bitget", okx: "OKX", ict: "OKX · ICT" }
 const BOT_BADGE_CLASS: Record<TradeReport["bot"], string> = {
   bitget: "border-pink-400/40 bg-pink-300/10 text-pink-200",
+  okx: "border-sky-400/40 bg-sky-300/10 text-sky-200",
   ict: "border-fuchsia-400/40 bg-fuchsia-300/10 text-fuchsia-200",
 }
 
@@ -173,7 +176,7 @@ function ReportCard({ report }: { report: TradeReport }) {
             <PartialExitsNote
               exits={report.partialExits}
               realizedPnlUsdt={report.realizedPnlUsdt}
-              unit={report.bot === "ict" ? "계약" : "BTC"}
+              unit={report.bot === "bitget" ? "BTC" : "계약"}
             />
           )}
 
@@ -189,19 +192,20 @@ function ReportCard({ report }: { report: TradeReport }) {
   )
 }
 
-type BotFilter = "all" | "bitget" | "ict"
+type BotFilter = "all" | "bitget" | "okx" | "ict"
 
 export default function TradeReportsPanel() {
   const bitgetReports = usePolledJson<TradeReport[]>(BITGET_REPORTS_URL, 30_000)
+  const okxReports = usePolledJson<TradeReport[]>(OKX_REPORTS_URL, 30_000)
   const ictReports = usePolledJson<TradeReport[]>(ICT_REPORTS_URL, 30_000)
   const [filter, setFilter] = useState<BotFilter>("all")
 
   const merged = useMemo(() => {
-    const all = [...(bitgetReports ?? []), ...(ictReports ?? [])]
+    const all = [...(bitgetReports ?? []), ...(okxReports ?? []), ...(ictReports ?? [])]
     return all.filter((r) => filter === "all" || r.bot === filter).sort((a, b) => b.entryTime - a.entryTime)
-  }, [bitgetReports, ictReports, filter])
+  }, [bitgetReports, okxReports, ictReports, filter])
 
-  const loaded = bitgetReports != null || ictReports != null
+  const loaded = bitgetReports != null || okxReports != null || ictReports != null
   const openCount = merged.filter((r) => r.status === "open").length
   const closedCount = merged.length - openCount
   const winCount = merged.filter((r) => r.exitReason === "take-profit").length
@@ -239,6 +243,7 @@ export default function TradeReportsPanel() {
             {([
               ["all", "전체"],
               ["bitget", "Bitget"],
+              ["okx", "OKX"],
               ["ict", "ICT"],
             ] as [BotFilter, string][]).map(([value, label]) => (
               <button
