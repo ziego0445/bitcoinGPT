@@ -2,7 +2,7 @@
   "mode": "live",
   "strategy": "ict-fvg",
   "startingBalance": 30.87732194920962,
-  "currentBalance": 28.339042180145956,
+  "currentBalance": 28.737882952991004,
   "startedAt": 1789045358687,
   "openPosition": {
     "pattern": "ict-fvg",
@@ -21,8 +21,34 @@
     "takeProfit2": 71782,
     "stopLoss": 76131.3,
     "orderId": "4083537781774274563",
-    "lastSize": 0.06,
-    "peakSize": 0.06
+    "lastSize": 0.03,
+    "peakSize": 0.06,
+    "balanceBefore": 28.339042180145956,
+    "partialExits": [
+      {
+        "time": 1794317423367,
+        "price": 73689.4,
+        "size": 0.01,
+        "tag": "tp1",
+        "pnlUsdt": 0.1298028786666667
+      },
+      {
+        "time": 1794317423367,
+        "price": 73689.4,
+        "size": 0.01,
+        "tag": "tp1",
+        "pnlUsdt": 0.1298028786666667
+      },
+      {
+        "time": 1794317423374,
+        "price": 73673,
+        "size": 0.01,
+        "tag": "tp1",
+        "pnlUsdt": 0.1314432066666667
+      }
+    ],
+    "realizedPnlUsdt": 0.3910489640000001,
+    "addsClosed": true
   },
   "trades": [
     {
