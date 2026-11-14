@@ -17,7 +17,8 @@
     "takeProfit": null,
     "exitAt": 1794698100000,
     "stopLoss": 62037.998999999996,
-    "orderId": "1505623357221670913"
+    "orderId": "1505623357221670913",
+    "timeExitSent": true
   },
   "trades": [
     {
