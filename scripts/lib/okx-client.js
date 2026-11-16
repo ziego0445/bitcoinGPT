@@ -61,7 +61,14 @@ function loadConfig() {
     throw new Error("OKX_RISK_PCT must be a fraction between 0 and 0.2 (e.g. 0.03 for 3%)");
   }
 
-  return { apiKey, apiSecret, apiPassphrase, marginUsdt, riskPct, symbol };
+  // Set: the full ladder's margin is this fraction of equity regardless of stop distance,
+  // and OKX_RISK_PCT is ignored. Unset: risk-based sizing as above.
+  const balancePct = process.env.OKX_BALANCE_PCT ? Number(process.env.OKX_BALANCE_PCT) : null;
+  if (balancePct != null && (!Number.isFinite(balancePct) || balancePct <= 0 || balancePct > 1)) {
+    throw new Error("OKX_BALANCE_PCT must be a fraction between 0 and 1 (e.g. 0.95 for 95% of equity)");
+  }
+
+  return { apiKey, apiSecret, apiPassphrase, marginUsdt, riskPct, balancePct, symbol };
 }
 
 function sign(secret, timestamp, method, requestPath, bodyString) {

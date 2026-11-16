@@ -449,6 +449,10 @@ async function resolveMarginUsdt(config, lossPerNotional) {
   const account = await okx.getAccount(config);
   const capUsdt =
     config.marginUsdt != null ? Math.min(config.marginUsdt, account.available) : Math.max(account.available * 0.95, 0);
+  // OKX_BALANCE_PCT: a flat share of equity, whatever the stop distance — no risk budget.
+  if (config.balancePct != null) {
+    return { marginUsdt: Math.min(capUsdt, account.equity * config.balancePct), capUsdt, riskBudget: Infinity };
+  }
   const riskBudget = account.equity * config.riskPct;
   const riskMargin = riskBudget / lossPerNotional / LEVERAGE;
   return { marginUsdt: Math.min(capUsdt, riskMargin), capUsdt, riskBudget };
@@ -581,7 +585,7 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
   log(
     `Signal: ICT ${latest.mssType} ${latest.direction} (lean ${regime}) price=${price} risk=${risk.toFixed(1)} ` +
       `stop=${stopLoss.toFixed(1)} targets=${takeProfit1.toFixed(1)}/${takeProfit2.toFixed(1)} ` +
-      `margin=${marginUsdt.toFixed(2)} ladderRisk=${ladderRisk.toFixed(2)}/${riskBudget.toFixed(2)} ` +
+      `margin=${marginUsdt.toFixed(2)} ladderRisk=${ladderRisk.toFixed(2)}/${riskBudget === Infinity ? "-" : riskBudget.toFixed(2)} ` +
       `tranche=${trancheSize} x${TRANCHES} — placing ladder...`,
   );
 
@@ -693,7 +697,9 @@ async function maybeEnter(config, contract, state, closedCandles, signals, repor
       `구조: ${latest.mssType} 유동성 스윕 → FVG 진입 · 최근 신호 우세 ${regime}`,
       `진입가: $${entryPrice.toLocaleString()}`,
       `증거금: $${marginUsdt.toFixed(2)} · ${LEVERAGE}x (3분할)`,
-      `전량 손절 시 위험: $${ladderRisk.toFixed(2)} (자산의 ${(config.riskPct * 100).toFixed(1)}% 기준)`,
+      config.balancePct != null
+        ? `전량 손절 시 손실: $${ladderRisk.toFixed(2)} (증거금 = 자산의 ${(config.balancePct * 100).toFixed(0)}%)`
+        : `전량 손절 시 위험: $${ladderRisk.toFixed(2)} (자산의 ${(config.riskPct * 100).toFixed(1)}% 기준)`,
       `추가진입: $${(price - sgn * risk * TRANCHE_STEP_R).toFixed(1)} / $${(price - sgn * risk * TRANCHE_STEP_R * 2).toFixed(1)}`,
       `익절: $${takeProfit1.toFixed(1)}(절반) · $${takeProfit2.toFixed(1)}(절반)`,
       `손절: $${stopLoss.toFixed(1)}`,
@@ -779,7 +785,9 @@ async function reconcileOnStartup(config, state, contract, reports) {
 async function main() {
   const config = okx.loadConfig();
   const marginDesc =
-    `${(config.riskPct * 100).toFixed(1)}% of equity at risk per full ladder, capped at ` +
+    (config.balancePct != null
+      ? `${(config.balancePct * 100).toFixed(0)}% of equity as margin per full ladder, capped at `
+      : `${(config.riskPct * 100).toFixed(1)}% of equity at risk per full ladder, capped at `) +
     (config.marginUsdt != null ? `${config.marginUsdt} USDT` : "~95% of available balance");
   log(`Starting ICT live-trade loop for ${config.symbol} on OKX (LIVE — real funds). Margin per trade: ${marginDesc} @ ${LEVERAGE}x.`);
 
